@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+requests
+sqlalchemy
+python-dotenv
+passlib
+python-multipart
+numpy
+scikit-learn
+pypdf
+python-docx

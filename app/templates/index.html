@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>祝余教育 - 智能知识图谱学习平台</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/tdesign.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="auth-home-body">
+  <main class="auth-home-shell">
+    <section class="auth-showcase">
+      <div class="auth-showcase-content">
+        <div class="brand-chip">Zhuyu Education</div>
+        <h1>让学习路径更清楚</h1>
+        <p>围绕知识图谱、练习、错题和教师班级管理，形成一条可追踪的学习流程。</p>
+        <div class="auth-feature-list">
+          <article>
+            <strong>知识图谱</strong>
+            <span>按学科、年级和核心知识点组织学习路径。</span>
+          </article>
+          <article>
+            <strong>自适应练习</strong>
+            <span>根据掌握度推荐下一题，逐步补齐薄弱点。</span>
+          </article>
+          <article>
+            <strong>错题复盘</strong>
+            <span>保存错因、参考答案和订正建议。</span>
+          </article>
+          <article>
+            <strong>教师班级</strong>
+            <span>教师创建班级邀请码，学生注册后自动归班。</span>
+          </article>
+        </div>
+      </div>
+      <div class="auth-preview-panel">
+        <div class="preview-node center">知识图谱</div>
+        <div class="preview-node top">数学</div>
+        <div class="preview-node right">英语</div>
+        <div class="preview-node bottom">错题本</div>
+        <div class="preview-node left">语文</div>
+      </div>
+    </section>
+
+    <section class="auth-panel">
+      <div class="auth-card">
+        <div class="auth-card-head">
+          <div>
+            <div class="brand-chip">Account</div>
+            <h2 id="authTitle">学生登录</h2>
+          </div>
+          <button id="enterWorkspaceButton" class="ghost-button" style="display:none;" type="button">进入工作台</button>
+        </div>
+
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-auth-mode="student-login" type="button">学生登录</button>
+          <button class="auth-tab" data-auth-mode="student-register" type="button">学生注册</button>
+          <button class="auth-tab" data-auth-mode="teacher-login" type="button">教师登录</button>
+          <button class="auth-tab" data-auth-mode="admin-login" type="button">管理员</button>
+        </div>
+
+        <div id="authError" class="auth-error" style="display:none;"></div>
+
+        <form class="auth-form active" data-auth-form="student-login">
+          <label><span>邮箱</span><input id="studentLoginEmail" autocomplete="email" placeholder="请输入学生邮箱"></label>
+          <label><span>密码</span><input id="studentLoginPassword" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
+          <button id="studentLoginButton" class="primary-button full-width" type="button">登录学生端</button>
+        </form>
+
+        <form class="auth-form" data-auth-form="student-register">
+          <label><span>姓名</span><input id="studentRegisterName" autocomplete="name" placeholder="请输入学生姓名"></label>
+          <label><span>邮箱</span><input id="studentRegisterEmail" autocomplete="email" placeholder="student@example.com"></label>
+          <label><span>密码</span><input id="studentRegisterPassword" type="password" autocomplete="new-password" placeholder="至少 8 位"></label>
+          <label><span>班级邀请码</span><input id="studentRegisterInviteCode" placeholder="请输入老师提供的邀请码"></label>
+          <button id="studentRegisterButton" class="primary-button full-width" type="button">注册学生账号</button>
+        </form>
+
+        <form class="auth-form" data-auth-form="teacher-login">
+          <label><span>邮箱</span><input id="teacherLoginEmail" autocomplete="email" placeholder="请输入教师邮箱"></label>
+          <label><span>密码</span><input id="teacherLoginPassword" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
+          <button id="teacherLoginButton" class="primary-button full-width" type="button">登录教师端</button>
+        </form>
+
+        <form class="auth-form" data-auth-form="admin-login">
+          <label><span>邮箱</span><input id="adminLoginEmail" autocomplete="email" placeholder="请输入管理员邮箱"></label>
+          <label><span>密码</span><input id="adminLoginPassword" type="password" autocomplete="current-password" placeholder="请输入密码"></label>
+          <button id="adminLoginButton" class="primary-button full-width" type="button">登录管理后台</button>
+        </form>
+      </div>
+    </section>
+  </main>
+  <script src="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/TDesign%20Web%20Components.min.js"></script>
+  <script src="/static/home.js"></script>
+</body>
+</html>

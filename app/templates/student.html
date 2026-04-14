@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>祝余教育 - 学生端</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/tdesign.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+  <div id="loginGate" class="login-gate-v2">
+    <div class="login-card">
+      <div class="brand-chip">Zhuyu Education</div>
+      <h1>🎓 学生学习台</h1>
+      <p class="hint">学生使用老师提供的班级邀请码注册</p>
+      <div class="inline-actions" style="margin-bottom:14px;">
+        <button id="showLoginFormButton" class="primary-button" type="button">登录</button>
+        <button id="showRegisterFormButton" class="ghost-button" type="button">学生注册</button>
+      </div>
+      <div id="loginForm">
+        <label><span>邮箱</span><input id="loginEmail" placeholder="请输入学生邮箱"></label>
+        <label><span>密码</span><input id="loginPassword" type="password" placeholder="请输入密码"></label>
+        <button id="loginButton" class="primary-button full-width">登 录</button>
+      </div>
+      <div id="registerForm" style="display:none;">
+        <label><span>姓名</span><input id="registerName" placeholder="请输入学生姓名"></label>
+        <label><span>邮箱</span><input id="registerEmail" placeholder="student@example.com"></label>
+        <label><span>密码</span><input id="registerPassword" type="password" placeholder="至少 8 位"></label>
+        <label><span>班级邀请码</span><input id="registerInviteCode" placeholder="例如：ZYU-DEMO01"></label>
+        <button id="registerButton" class="primary-button full-width">注册并进入学习台</button>
+      </div>
+      <div id="loginError" class="hint" style="color:#e74c3c;display:none;margin-top:8px;"></div>
+    </div>
+  </div>
+
+  <div id="appMain" class="layout-shell" style="display:none;">
+    <aside class="layout-sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-label">Zhuyu Education</div>
+        <h2>🎓 学生端</h2>
+      </div>
+      <div class="sidebar-user" id="sidebarUser">
+        <div class="user-dot"></div>
+        <span id="authStatus">未登录</span>
+      </div>
+      <div class="sidebar-nav">
+        <div class="sidebar-nav-group">
+          <div class="nav-group-label">学习</div>
+          <button class="nav-item active" data-page="profile">
+            <span class="nav-icon">👤</span><span>档案总览</span>
+          </button>
+          <button class="nav-item" data-page="graph">
+            <span class="nav-icon">🔗</span><span>知识图谱</span>
+          </button>
+          <button class="nav-item" data-page="diagnosis">
+            <span class="nav-icon">🔍</span><span>知识诊断</span>
+          </button>
+          <button class="nav-item" data-page="practice">
+            <span class="nav-icon">✏️</span><span>刷题练习</span>
+          </button>
+          <button class="nav-item" data-page="mistakes">
+            <span class="nav-icon">📝</span><span>错题本</span>
+          </button>
+          <button class="nav-item" data-page="tutor">
+            <span class="nav-icon">🤖</span><span>AI 辅导</span>
+          </button>
+          <button class="nav-item" data-page="report">
+            <span class="nav-icon">📊</span><span>学习报告</span>
+          </button>
+        </div>
+        <div class="sidebar-nav-group">
+          <div class="nav-group-label">设置</div>
+          <div style="padding:4px 12px;">
+            <select id="studentSelect" class="sidebar-select"><option>加载中...</option></select>
+          </div>
+        </div>
+      </div>
+      <div class="sidebar-footer">
+        <button class="nav-item" id="logoutButton">
+          <span class="nav-icon">🚪</span><span>退出登录</span>
+        </button>
+        <a class="nav-item" href="/">
+          <span class="nav-icon">🏠</span><span>返回首页</span>
+        </a>
+      </div>
+    </aside>
+
+    <div class="layout-main">
+
+      <section class="page-section active" data-page="profile">
+        <div class="page-header">
+          <h2>👤 学习档案总览</h2>
+          <p>查看你的基本信息、各知识点掌握情况和知识图谱</p>
+        </div>
+        <section class="panel" id="quickStatsCard" style="margin-bottom:18px;">
+          <div id="quickStatsContent"></div>
+        </section>
+        <section class="panel" style="margin-bottom:18px;">
+          <div class="panel-header">
+            <h3>🔗 知识图谱</h3>
+            <button id="openGraphButton" class="ghost-button">打开完整图谱</button>
+          </div>
+          <div id="knowledgeGraphPreview" class="content-view empty-state">登录后加载</div>
+        </section>
+        <section class="panel">
+          <div class="panel-header">
+            <h3>📈 各知识点掌握度</h3>
+          </div>
+          <div id="masteryCards" class="mastery-list"></div>
+        </section>
+      </section>
+
+      <section class="page-section" data-page="graph">
+        <div class="page-header">
+          <h2>🔗 知识图谱</h2>
+          <p>看清知识点之间的前置关系和当前掌握度</p>
+        </div>
+        <section class="panel">
+          <div class="panel-header">
+            <h3>完整图谱</h3>
+            <div class="inline-actions">
+              <p>点击箭头或「展开」查看下级知识点</p>
+              <button id="expandGraphButton" class="ghost-button">全部展开</button>
+              <button id="collapseGraphButton" class="ghost-button">全部收起</button>
+            </div>
+          </div>
+          <div id="knowledgeGraphView" class="content-view empty-state">登录后加载</div>
+        </section>
+      </section>
+
+      <section class="page-section" data-page="diagnosis">
+        <div class="page-header">
+          <h2>🔍 知识诊断</h2>
+          <p>选择目标知识点，系统分析你的薄弱环节</p>
+        </div>
+        <section class="panel">
+          <div class="inline-actions" style="margin-bottom:16px;">
+            <select id="targetTopicId"></select>
+            <button id="diagnosisButton" class="primary-button">开始诊断</button>
+          </div>
+          <div id="diagnosisView" class="content-view empty-state">选择知识点后点击「开始诊断」</div>
+        </section>
+      </section>
+
+      <section class="page-section" data-page="practice">
+        <div class="page-header">
+          <h2>✏️ AI 推荐练习</h2>
+          <p>系统根据你的掌握度自动推荐最合适的题目</p>
+        </div>
+        <section class="panel" style="margin-bottom:18px;">
+          <div class="panel-header">
+            <h3>推荐题目</h3>
+            <button id="practiceButton" class="primary-button">推荐下一题 →</button>
+          </div>
+          <div id="practiceView" class="content-view empty-state">点击「推荐下一题」获取题目</div>
+        </section>
+
+        <section class="panel" style="margin-bottom:18px;">
+          <div class="panel-header">
+            <h3>✏️ 作答区</h3>
+          </div>
+          <div id="answerWorkspace" class="content-view empty-state">推荐题目后显示输入框</div>
+          <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="submitAnswerButton" class="primary-button">提交答案</button>
+            <button id="coachCardButton" class="ghost-button">查看讲题卡片</button>
+            <button id="mistakeButton" class="ghost-button">加入错题本</button>
+          </div>
+        </section>
+
+        <section class="panel" style="margin-bottom:18px;">
+          <div class="panel-header">
+            <h3>📝 批改结果</h3>
+          </div>
+          <div id="submissionResultView" class="content-view empty-state">提交后显示批改结果</div>
+        </section>
+
+        <details class="secondary-disclosure">
+          <summary>讲题卡片与错题分析</summary>
+          <div class="two-col">
+            <section class="panel">
+              <div class="panel-header">
+                <h3>讲题卡片</h3>
+              </div>
+              <div id="coachCardView" class="content-view empty-state">提交后可生成</div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h3>错题分析</h3>
+              </div>
+              <div id="mistakeView" class="content-view empty-state">做错后可分析</div>
+            </section>
+          </div>
+        </details>
+      </section>
+
+      <section class="page-section" data-page="mistakes">
+        <div class="page-header">
+          <h2>📝 错题本</h2>
+          <p>复盘已保存错题，查看错因、订正建议和参考答案</p>
+        </div>
+        <section class="panel">
+          <div class="panel-header">
+            <div>
+              <h3>错题记录</h3>
+              <p>从练习页点击「加入错题本」后会保存到这里</p>
+            </div>
+            <button id="refreshMistakesButton" class="ghost-button">刷新错题本</button>
+          </div>
+          <div id="mistakeNotebookView" class="content-view empty-state">登录后加载错题记录</div>
+        </section>
+      </section>
+
+      <section class="page-section" data-page="tutor">
+        <div class="page-header">
+          <h2>🤖 AI 智能辅导</h2>
+          <p>遇到不懂的知识点可以直接问 AI 导师</p>
+        </div>
+        <section class="panel">
+          <div class="inline-actions" style="margin-bottom:16px;">
+            <select id="chatSessionSelect"></select>
+            <button id="createSessionButton" class="ghost-button">新建对话</button>
+          </div>
+          <div id="chatHistory" class="chat-history">
+            <div class="empty-state">发送消息后开始对话</div>
+          </div>
+          <div class="chat-composer">
+            <label><span>知识点</span><select id="chatTopicId"></select></label>
+            <textarea id="chatInput" rows="3" placeholder="例如：一次函数的斜率和截距怎么理解？"></textarea>
+            <button id="sendChatButton" class="primary-button">发送问题 →</button>
+          </div>
+        </section>
+      </section>
+
+      <section class="page-section" data-page="report">
+        <div class="page-header">
+          <h2>📊 学习报告</h2>
+          <p>系统汇总你的学习数据，生成阶段性报告</p>
+        </div>
+        <section class="panel">
+          <div class="panel-header">
+            <h3>阶段报告</h3>
+            <div class="inline-actions">
+              <select id="reportTopicId"></select>
+              <button id="generateReportButton" class="primary-button">生成报告 →</button>
+            </div>
+          </div>
+          <div id="reportView" class="content-view empty-state">还没有学习报告，选择知识点后点击生成</div>
+        </section>
+        <section class="panel" style="margin-top:18px;">
+          <div class="panel-header">
+            <h3>历史报告</h3>
+            <p>生成后的报告会保存在这里</p>
+          </div>
+          <div id="reportHistoryView" class="content-view empty-state">暂无历史报告</div>
+        </section>
+      </section>
+
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/TDesign%20Web%20Components.min.js"></script>
+  <script src="/static/student.js"></script>
+</body>
+</html>
