@@ -10,6 +10,7 @@ from app.domain.models import (
     AuthResponse,
     AdminDashboard,
     AnnouncementCreate,
+    AnnouncementDraftView,
     AnnouncementView,
     ChatMessageSend,
     ChatMessageView,
@@ -75,11 +76,15 @@ from app.domain.models import (
     StudyReportResponse,
     TeacherDashboard,
     TeacherCreateRequest,
+    TeacherImportResponse,
+    TeacherManageItem,
     TeacherOption,
+    TextbookView,
     Topic,
     TutorRequest,
     TutorResponse,
     UserSummary,
+    KnowledgeNodeView,
 )
 
 router = APIRouter()
@@ -120,48 +125,94 @@ def require_chat_session(session_id: int, user: UserSummary) -> None:
         raise HTTPException(status_code=404, detail="chat session not found")
 
 
-def require_topic(topic_id: str) -> None:
-    if not container.repository.has_topic(topic_id):
-        raise HTTPException(status_code=404, detail="topic not found")
+def _topics_for_context(user: UserSummary | None = None, textbook_id: int | None = None) -> list[Topic]:
+    if user and user.school_id:
+        try:
+            resolved_textbook_id = textbook_id
+            if resolved_textbook_id is None:
+                resolved_textbook_id = container.knowledge_config_service.resolve_user_textbook_id(user.id, user.school_id)
+            return container.knowledge_config_service.list_topics_for_school(user.school_id, resolved_textbook_id)
+        except Exception:
+            pass
+    return container.repository.list_topics()
 
 
-def require_optional_topic(topic_id: str | None, field_name: str = "topic_id") -> None:
-    if topic_id and not container.repository.has_topic(topic_id):
-        raise HTTPException(status_code=400, detail=f"{field_name} not found")
+def require_topic(topic_id: str, user: UserSummary | None = None, textbook_id: int | None = None) -> None:
+    if any(topic.id == topic_id for topic in _topics_for_context(user, textbook_id)):
+        return
+    if container.repository.has_topic(topic_id):
+        return
+    raise HTTPException(status_code=404, detail="topic not found")
 
 
-def require_mastery_topics(mastery_map: dict) -> None:
+def require_optional_topic(
+    topic_id: str | None,
+    field_name: str = "topic_id",
+    user: UserSummary | None = None,
+    textbook_id: int | None = None,
+) -> None:
+    if topic_id:
+        try:
+            require_topic(topic_id, user=user, textbook_id=textbook_id)
+        except HTTPException:
+            raise HTTPException(status_code=400, detail=f"{field_name} not found")
+
+
+def require_mastery_topics(mastery_map: dict, user: UserSummary | None = None, textbook_id: int | None = None) -> None:
     for topic_id, mastery in mastery_map.items():
-        require_optional_topic(topic_id)
+        require_optional_topic(topic_id, user=user, textbook_id=textbook_id)
         if mastery.topic_id != topic_id:
             raise HTTPException(status_code=400, detail="mastery topic_id must match the map key")
 
 
-def _default_topic_for_grade(grade_level: str, subject: str) -> str:
+def _default_topic_for_grade(
+    grade_level: str,
+    subject: str,
+    school_id: int | None = None,
+    textbook_id: int | None = None,
+) -> str:
+    topics_source = container.repository.list_topics()
+    if school_id:
+        try:
+            topics_source = container.knowledge_config_service.list_topics_for_school(school_id, textbook_id)
+        except Exception:
+            topics_source = container.repository.list_topics()
     topics = [
-        topic for topic in container.repository.list_topics()
+        topic for topic in topics_source
         if topic.subject == subject and (not topic.grade_level or topic.grade_level == grade_level)
         and topic.level >= 3
     ]
     if not topics:
-        topics = [topic for topic in container.repository.list_topics() if topic.subject == subject]
+        topics = [topic for topic in topics_source if topic.subject == subject and topic.level >= 3]
+    if not topics:
+        topics = [topic for topic in topics_source if topic.level >= 3]
     if not topics:
         topics = container.repository.list_topics()
     topics.sort(key=lambda item: (item.sort_order, item.difficulty, item.id))
     return topics[0].id
 
 
-def _knowledge_tree() -> list[KnowledgeTreeNode]:
-    topics = sorted(container.repository.list_topics(), key=lambda item: (item.sort_order, item.id))
-    question_counts = {
-        topic.id: len(container.repository.list_questions_by_topic(topic.id))
-        for topic in topics
-    }
+def _knowledge_tree(school_id: int | None = None, textbook_id: int | None = None) -> list[KnowledgeTreeNode]:
+    topics_source = container.repository.list_topics()
+    if school_id:
+        try:
+            topics_source = container.knowledge_config_service.list_topics_for_school(school_id, textbook_id)
+        except Exception:
+            topics_source = container.repository.list_topics()
+    topics = sorted(topics_source, key=lambda item: (item.sort_order, item.id))
+    question_counts = {topic.id: 0 for topic in topics}
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(text("SELECT topic_id, COUNT(*) AS cnt FROM question_bank GROUP BY topic_id")).fetchall()
+            for row in rows:
+                if row[0] in question_counts:
+                    question_counts[row[0]] = int(row[1])
+    except Exception:
+        pass
     direct_children: dict[str | None, list] = {}
+    topic_ids = {topic.id for topic in topics}
     for topic in topics:
         direct_children.setdefault(topic.parent_id, []).append(topic)
-
-    subjects = sorted({topic.subject for topic in topics if topic.subject})
 
     def build_topic_node(topic) -> KnowledgeTreeNode:
         return KnowledgeTreeNode(
@@ -174,24 +225,11 @@ def _knowledge_tree() -> list[KnowledgeTreeNode]:
             children=[build_topic_node(child) for child in direct_children.get(topic.id, [])],
         )
 
-    result: list[KnowledgeTreeNode] = []
-    for subject in subjects:
-        subject_children = [
-            build_topic_node(topic)
-            for topic in topics
-            if topic.parent_id == subject or (topic.subject == subject and topic.level == 2 and not topic.parent_id)
-        ]
-        result.append(
-            KnowledgeTreeNode(
-                id=subject,
-                name=subject,
-                subject=subject,
-                level=1,
-                question_count=sum(question_counts.get(topic.id, 0) for topic in topics if topic.subject == subject),
-                children=subject_children,
-            )
-        )
-    return result
+    root_topics = [
+        topic for topic in topics
+        if not topic.parent_id or topic.parent_id not in topic_ids
+    ]
+    return [build_topic_node(topic) for topic in root_topics]
 
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -269,7 +307,12 @@ def register_student(request: StudentRegisterRequest) -> AuthResponse:
     try:
         classroom = container.teacher_service.find_classroom_by_invite_code(request.invite_code)
         auth = container.auth_service.register(request)
-        target_topic_id = request.target_topic_id or _default_topic_for_grade(classroom.grade_level, request.target_subject)
+        target_topic_id = request.target_topic_id or _default_topic_for_grade(
+            classroom.grade_level,
+            request.target_subject,
+            school_id=classroom.school_id,
+            textbook_id=classroom.textbook_id,
+        )
         container.student_service.create_profile(
             auth.user.id,
             StudentProfileCreate(
@@ -280,6 +323,7 @@ def register_student(request: StudentRegisterRequest) -> AuthResponse:
                 school_id=classroom.school_id,
                 classroom_id=classroom.id,
                 teacher_user_id=classroom.teacher_user_id,
+                textbook_id=classroom.textbook_id,
             ),
         )
         return auth
@@ -310,6 +354,17 @@ def admin_list_teachers(x_session_token: str | None = Header(default=None)) -> l
     return container.admin_service.list_teachers(user.id)
 
 
+@router.get("/admin/teachers/manage", response_model=dict)
+def admin_manage_teachers(
+    q: str = "",
+    page: int = 1,
+    page_size: int = 20,
+    x_session_token: str | None = Header(default=None),
+) -> dict:
+    user = current_admin(x_session_token)
+    return container.admin_service.list_teachers_manage(user.id, q=q, page=page, page_size=page_size)
+
+
 @router.post("/admin/teachers", response_model=TeacherOption)
 def admin_create_teacher(
     request: TeacherCreateRequest,
@@ -322,10 +377,52 @@ def admin_create_teacher(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.post("/admin/teachers/import-csv", response_model=TeacherImportResponse)
+def admin_import_teachers_csv(
+    csv_content: str = Body(..., media_type="text/plain"),
+    x_session_token: str | None = Header(default=None),
+) -> TeacherImportResponse:
+    user = current_admin(x_session_token)
+    try:
+        return container.admin_service.import_teachers_by_csv(user.id, csv_content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/admin/teachers/{teacher_id}/reset-password", response_model=dict)
+def admin_reset_teacher_password(teacher_id: int, x_session_token: str | None = Header(default=None)) -> dict:
+    user = current_admin(x_session_token)
+    try:
+        return container.admin_service.reset_teacher_password(user.id, teacher_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/admin/teachers/{teacher_id}", response_model=dict[str, str])
+def admin_delete_teacher(teacher_id: int, x_session_token: str | None = Header(default=None)) -> dict[str, str]:
+    user = current_admin(x_session_token)
+    try:
+        container.admin_service.delete_teacher(user.id, teacher_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"status": "ok"}
+
+
 @router.get("/admin/announcements", response_model=list[AnnouncementView])
 def admin_list_announcements(x_session_token: str | None = Header(default=None)) -> list[AnnouncementView]:
     user = current_admin(x_session_token)
     return container.admin_service.list_announcements(user.id)
+
+
+@router.get("/admin/announcements/manage", response_model=dict)
+def admin_manage_announcements(
+    q: str = "",
+    page: int = 1,
+    page_size: int = 12,
+    x_session_token: str | None = Header(default=None),
+) -> dict:
+    user = current_admin(x_session_token)
+    return container.admin_service.list_announcements_manage(user.id, q=q, page=page, page_size=page_size)
 
 
 @router.post("/admin/announcements", response_model=AnnouncementView)
@@ -337,16 +434,239 @@ def admin_create_announcement(
     return container.admin_service.create_announcement(user.id, request)
 
 
+@router.get("/admin/announcements/{announcement_id}", response_model=AnnouncementView)
+def admin_get_announcement(announcement_id: int, x_session_token: str | None = Header(default=None)) -> AnnouncementView:
+    user = current_admin(x_session_token)
+    try:
+        return container.admin_service.get_announcement(user.id, announcement_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.put("/admin/announcements/{announcement_id}", response_model=AnnouncementView)
+def admin_update_announcement(
+    announcement_id: int,
+    request: AnnouncementCreate,
+    x_session_token: str | None = Header(default=None),
+) -> AnnouncementView:
+    user = current_admin(x_session_token)
+    try:
+        return container.admin_service.update_announcement(user.id, announcement_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.delete("/admin/announcements/{announcement_id}", response_model=dict[str, str])
+def admin_delete_announcement(announcement_id: int, x_session_token: str | None = Header(default=None)) -> dict[str, str]:
+    user = current_admin(x_session_token)
+    try:
+        container.admin_service.delete_announcement(user.id, announcement_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {"status": "ok"}
+
+
+@router.get("/admin/announcement-draft", response_model=AnnouncementDraftView | None)
+def admin_get_announcement_draft(x_session_token: str | None = Header(default=None)) -> AnnouncementDraftView | None:
+    user = current_admin(x_session_token)
+    return container.admin_service.get_announcement_draft(user.id)
+
+
+@router.put("/admin/announcement-draft", response_model=AnnouncementDraftView)
+def admin_save_announcement_draft(
+    payload: dict,
+    x_session_token: str | None = Header(default=None),
+) -> AnnouncementDraftView:
+    user = current_admin(x_session_token)
+    return container.admin_service.save_announcement_draft(
+        user.id,
+        payload.get("title", ""),
+        payload.get("content_html", ""),
+    )
+
+
 @router.get("/admin/question-bank", response_model=list[QuestionBankItemView])
 def admin_question_bank(x_session_token: str | None = Header(default=None)) -> list[QuestionBankItemView]:
     current_admin(x_session_token)
     return container.question_bank_service.list_questions()
 
 
+@router.get("/admin/question-bank/manage", response_model=dict)
+def admin_manage_question_bank(
+    q: str = "",
+    topic_id: str = "",
+    subject: str = "",
+    grade_level: str = "",
+    status: str = "",
+    question_type: str = "",
+    difficulty_min: float | None = None,
+    difficulty_max: float | None = None,
+    page: int = 1,
+    page_size: int = 20,
+    textbook_id: int | None = None,
+    x_session_token: str | None = Header(default=None),
+) -> dict:
+    user = current_admin(x_session_token)
+    return container.admin_service.list_question_bank_manage(
+        admin_user_id=user.id,
+        q=q,
+        topic_id=topic_id,
+        subject=subject,
+        grade_level=grade_level,
+        status=status,
+        question_type=question_type,
+        difficulty_min=difficulty_min,
+        difficulty_max=difficulty_max,
+        page=page,
+        page_size=page_size,
+        textbook_id=textbook_id,
+    )
+
+
+@router.post("/admin/question-bank/batch", response_model=dict)
+def admin_batch_question_bank(
+    payload: dict,
+    x_session_token: str | None = Header(default=None),
+) -> dict:
+    current_admin(x_session_token)
+    question_ids = payload.get("question_ids") or []
+    action = payload.get("action") or ""
+    try:
+        updated = container.admin_service.update_question_bank_status(question_ids, action)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"updated_count": updated}
+
+
+@router.post("/admin/question-bank/export", response_class=PlainTextResponse)
+def admin_export_question_bank(
+    payload: dict,
+    x_session_token: str | None = Header(default=None),
+) -> PlainTextResponse:
+    user = current_admin(x_session_token)
+    csv_content = container.admin_service.export_question_bank(user.id, payload or {})
+    return PlainTextResponse(
+        content="\ufeff" + csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=question_bank_export.csv"},
+    )
+
+
 @router.get("/admin/knowledge-tree", response_model=list[KnowledgeTreeNode])
 def admin_knowledge_tree(x_session_token: str | None = Header(default=None)) -> list[KnowledgeTreeNode]:
+    user = current_admin(x_session_token)
+    return _knowledge_tree(school_id=user.school_id)
+
+
+@router.get("/admin/textbooks", response_model=list[TextbookView])
+def admin_list_textbooks(x_session_token: str | None = Header(default=None)) -> list[TextbookView]:
+    user = current_admin(x_session_token)
+    return container.admin_service.list_textbooks(user.id)
+
+
+@router.post("/admin/textbooks", response_model=TextbookView)
+def admin_create_textbook(payload: dict, x_session_token: str | None = Header(default=None)) -> TextbookView:
+    user = current_admin(x_session_token)
+    try:
+        return container.admin_service.create_textbook(
+            user.id,
+            name=payload.get("name", ""),
+            set_default=bool(payload.get("is_default", False)),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/admin/knowledge/tree", response_model=list[KnowledgeNodeView])
+def admin_list_knowledge_tree(
+    textbook_id: int | None = None,
+    x_session_token: str | None = Header(default=None),
+) -> list[KnowledgeNodeView]:
+    user = current_admin(x_session_token)
+    return container.admin_service.list_knowledge_tree(user.id, textbook_id)
+
+
+@router.get("/admin/knowledge/topic-options", response_model=list[Topic])
+def admin_knowledge_topic_options(x_session_token: str | None = Header(default=None)) -> list[Topic]:
     current_admin(x_session_token)
-    return _knowledge_tree()
+    return container.admin_service.topic_ref_options()
+
+
+@router.post("/admin/knowledge/nodes", response_model=KnowledgeNodeView)
+def admin_create_knowledge_node(payload: dict, x_session_token: str | None = Header(default=None)) -> KnowledgeNodeView:
+    user = current_admin(x_session_token)
+    textbook_id = payload.get("textbook_id")
+    if textbook_id is None:
+        raise HTTPException(status_code=400, detail="textbook_id is required")
+    try:
+        return container.admin_service.create_knowledge_node(
+            admin_user_id=user.id,
+            textbook_id=int(textbook_id),
+            payload=payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.put("/admin/knowledge/nodes/{node_key}", response_model=KnowledgeNodeView)
+def admin_update_knowledge_node(
+    node_key: str,
+    payload: dict,
+    x_session_token: str | None = Header(default=None),
+) -> KnowledgeNodeView:
+    user = current_admin(x_session_token)
+    textbook_id = payload.get("textbook_id")
+    if textbook_id is None:
+        raise HTTPException(status_code=400, detail="textbook_id is required")
+    try:
+        return container.admin_service.update_knowledge_node(
+            admin_user_id=user.id,
+            textbook_id=int(textbook_id),
+            node_key=node_key,
+            payload=payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.delete("/admin/knowledge/nodes/{node_key}", response_model=dict)
+def admin_delete_knowledge_node(
+    node_key: str,
+    textbook_id: int,
+    x_session_token: str | None = Header(default=None),
+) -> dict:
+    user = current_admin(x_session_token)
+    deleted_count = container.admin_service.delete_knowledge_node(user.id, textbook_id, node_key)
+    return {"deleted_count": deleted_count}
+
+
+@router.post("/admin/knowledge/nodes/batch-delete", response_model=dict)
+def admin_batch_delete_knowledge_nodes(payload: dict, x_session_token: str | None = Header(default=None)) -> dict:
+    user = current_admin(x_session_token)
+    textbook_id = payload.get("textbook_id")
+    if textbook_id is None:
+        raise HTTPException(status_code=400, detail="textbook_id is required")
+    deleted_count = container.admin_service.batch_delete_knowledge_nodes(
+        user.id,
+        int(textbook_id),
+        payload.get("node_keys") or [],
+    )
+    return {"deleted_count": deleted_count}
+
+
+@router.post("/admin/knowledge/nodes/reorder", response_model=dict)
+def admin_reorder_knowledge_nodes(payload: dict, x_session_token: str | None = Header(default=None)) -> dict:
+    user = current_admin(x_session_token)
+    textbook_id = payload.get("textbook_id")
+    if textbook_id is None:
+        raise HTTPException(status_code=400, detail="textbook_id is required")
+    updated = container.admin_service.reorder_knowledge_nodes(
+        admin_user_id=user.id,
+        textbook_id=int(textbook_id),
+        parent_node_key=payload.get("parent_node_key"),
+        ordered_node_keys=payload.get("ordered_node_keys") or [],
+    )
+    return {"updated_count": updated}
 
 
 @router.get("/auth/me", response_model=UserSummary)
@@ -419,9 +739,9 @@ def import_question_bank(
     request: QuestionBankImportRequest,
     x_session_token: str | None = Header(default=None),
 ) -> list[QuestionBankItemView]:
-    current_teacher(x_session_token)
+    user = current_teacher(x_session_token)
     for question in request.questions:
-        require_optional_topic(question.topic_id)
+        require_optional_topic(question.topic_id, user=user)
     return container.question_bank_service.import_questions(request)
 
 
@@ -436,8 +756,8 @@ def generate_questions(
     request: QuestionGenerateRequest,
     x_session_token: str | None = Header(default=None),
 ) -> QuestionGenerateResponse:
-    current_teacher(x_session_token)
-    require_topic(request.topic_id)
+    user = current_teacher(x_session_token)
+    require_topic(request.topic_id, user=user)
     if request.difficulty_min > request.difficulty_max:
         raise HTTPException(status_code=400, detail="difficulty_min must be <= difficulty_max")
     return container.question_bank_service.generate_questions(request)
@@ -517,7 +837,7 @@ def import_documents(
 ) -> list[KnowledgeDocumentView]:
     user = current_teacher(x_session_token)
     for document in request.documents:
-        require_optional_topic(document.topic_id)
+        require_optional_topic(document.topic_id, user=user)
     return container.document_service.import_documents(request, user.id)
 
 
@@ -532,7 +852,7 @@ async def upload_document(
 ) -> KnowledgeDocumentView:
     user = current_teacher(x_session_token)
     topic_id = topic_id or None
-    require_optional_topic(topic_id)
+    require_optional_topic(topic_id, user=user)
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="uploaded file is larger than 10MB")
@@ -556,7 +876,7 @@ def import_documents_from_directory(
     x_session_token: str | None = Header(default=None),
 ) -> KnowledgeDirectoryImportResponse:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id)
+    require_optional_topic(request.topic_id, user=user)
     try:
         return container.document_service.import_directory(request, user.id)
     except ValueError as exc:
@@ -591,7 +911,7 @@ def search_documents(
     x_session_token: str | None = Header(default=None),
 ) -> list[KnowledgeSearchHit]:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id)
+    require_optional_topic(request.topic_id, user=user)
     return container.document_service.search(request, user.id)
 
 
@@ -601,8 +921,8 @@ def evaluate_documents(
     x_session_token: str | None = Header(default=None),
 ) -> RetrievalEvaluationResponse:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id)
-    require_optional_topic(request.expected_topic_id, "expected_topic_id")
+    require_optional_topic(request.topic_id, user=user)
+    require_optional_topic(request.expected_topic_id, "expected_topic_id", user=user)
     return container.document_service.evaluate_retrieval(request, user.id)
 
 
@@ -626,7 +946,7 @@ def create_retrieval_case(
     x_session_token: str | None = Header(default=None),
 ) -> RetrievalCaseView:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.expected_topic_id, "expected_topic_id")
+    require_optional_topic(request.expected_topic_id, "expected_topic_id", user=user)
     return container.document_service.create_retrieval_case(user.id, request)
 
 
@@ -647,12 +967,29 @@ def run_retrieval_cases(x_session_token: str | None = Header(default=None)) -> R
 
 
 @router.get("/graph/topics", response_model=list[Topic])
-def list_topics() -> list[Topic]:
+def list_topics(
+    textbook_id: int | None = None,
+    x_session_token: str | None = Header(default=None),
+) -> list[Topic]:
+    if x_session_token:
+        try:
+            user = current_user(x_session_token)
+            return _topics_for_context(user, textbook_id)
+        except HTTPException:
+            pass
     return container.repository.list_topics()
 
 
 @router.get("/graph/topics/{topic_id}", response_model=Topic)
-def get_topic(topic_id: str) -> Topic:
+def get_topic(topic_id: str, x_session_token: str | None = Header(default=None)) -> Topic:
+    if x_session_token:
+        try:
+            user = current_user(x_session_token)
+            topic = next((item for item in _topics_for_context(user) if item.id == topic_id), None)
+            if topic:
+                return topic
+        except HTTPException:
+            pass
     require_topic(topic_id)
     return container.graph_service.get_topic(topic_id)
 
@@ -678,8 +1015,9 @@ def create_student(
     x_session_token: str | None = Header(default=None),
 ) -> StudentProfileSummary:
     user = current_user(x_session_token)
-    if not container.repository.has_topic(request.target_topic_id):
-        raise HTTPException(status_code=400, detail="target topic not found")
+    require_topic(request.target_topic_id, user=user, textbook_id=request.textbook_id)
+    if request.textbook_id is None and user.school_id:
+        request.textbook_id = container.knowledge_config_service.resolve_user_textbook_id(user.id, user.school_id)
     return container.student_service.create_profile(user.id, request)
 
 
@@ -696,7 +1034,8 @@ def save_mastery(
     x_session_token: str | None = Header(default=None),
 ) -> StudentProfileDetail:
     user = current_user(x_session_token)
-    require_mastery_topics(request.mastery)
+    profile = require_student_profile(student_profile_id, user)
+    require_mastery_topics(request.mastery, user=user, textbook_id=profile.textbook_id)
     try:
         return container.student_service.save_mastery(student_profile_id, request, user.id)
     except ValueError as exc:
@@ -715,7 +1054,7 @@ def student_dashboard(
         latest_report=container.report_service.latest(student_profile_id),
         recent_mistakes=container.mistake_service.list_records(student_profile_id)[:6],
         recent_sessions=container.chat_service.list_sessions(student_profile_id)[:6],
-        available_topics=container.repository.list_topics(),
+        available_topics=_topics_for_context(user, profile.textbook_id),
     )
 
 
@@ -726,8 +1065,8 @@ def run_diagnosis(
     x_session_token: str | None = Header(default=None),
 ) -> DiagnosisResponse:
     user = current_user(x_session_token)
-    require_topic(request.target_topic_id)
     profile = require_student_profile(student_profile_id, user)
+    require_topic(request.target_topic_id, user=user, textbook_id=profile.textbook_id)
     diagnosis = DiagnosisRequest(
         student_id=str(student_profile_id),
         target_topic_id=request.target_topic_id,
@@ -743,8 +1082,8 @@ def run_practice(
     x_session_token: str | None = Header(default=None),
 ) -> PracticeResponse:
     user = current_user(x_session_token)
-    require_topic(request.topic_id)
     profile = require_student_profile(student_profile_id, user)
+    require_topic(request.topic_id, user=user, textbook_id=profile.textbook_id)
     practice = PracticeRequest(
         student_id=str(student_profile_id),
         topic_id=request.topic_id,
@@ -847,8 +1186,8 @@ def generate_student_report(
     x_session_token: str | None = Header(default=None),
 ) -> ReportRecordView:
     user = current_user(x_session_token)
-    require_topic(request.target_topic_id)
     profile = require_student_profile(student_profile_id, user)
+    require_topic(request.target_topic_id, user=user, textbook_id=profile.textbook_id)
     report = container.report_service.generate(
         ReportRequest(
             student_id=str(student_profile_id),
@@ -922,7 +1261,7 @@ def send_chat_message(
 ) -> ChatTurnResponse:
     user = current_user(x_session_token)
     require_chat_session(session_id, user)
-    require_topic(request.topic_id)
+    require_topic(request.topic_id, user=user)
     try:
         return container.chat_service.send_message(session_id, request)
     except ValueError as exc:

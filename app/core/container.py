@@ -15,6 +15,7 @@ from app.core.database import (
     SchoolORM,
     StudentMasteryORM,
     StudentProfileORM,
+    TextbookORM,
     UserORM,
     init_database,
 )
@@ -27,6 +28,7 @@ from app.services.dashscope_service import DashScopeEmbeddingService
 from app.services.diagnosis_service import DiagnosisService
 from app.services.document_service import DocumentService
 from app.services.knowledge_graph_service import KnowledgeGraphService
+from app.services.knowledge_config_service import KnowledgeConfigService
 from app.services.llm_service import LLMService
 from app.services.mistake_service import MistakeService
 from app.services.practice_service import PracticeService
@@ -60,7 +62,8 @@ class ServiceContainer:
         self.dashscope_service = dashscope_service
         self.retrieval_service = retrieval_service
         self.auth_service = AuthService()
-        self.admin_service = AdminService(self.auth_service)
+        self.knowledge_config_service = KnowledgeConfigService(repository)
+        self.admin_service = AdminService(self.auth_service, self.knowledge_config_service)
         self.student_service = StudentService()
         self.diagnosis_service = DiagnosisService(graph_service)
         self.practice_service = PracticeService(repository)
@@ -182,6 +185,14 @@ class ServiceContainer:
                 session.flush()
             if demo_user and demo_user.school_id is None:
                 demo_user.school_id = demo_school.id
+            default_textbook = session.execute(
+                select(TextbookORM).where(TextbookORM.school_id == demo_school.id).order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
+            ).scalars().first()
+            if not default_textbook:
+                default_textbook = TextbookORM(school_id=demo_school.id, name="通用教材", is_default=1)
+                session.add(default_textbook)
+                session.flush()
+            default_textbook_id = default_textbook.id
             demo_classroom = session.execute(
                 select(ClassroomORM).where(
                     ClassroomORM.teacher_user_id == demo_user.id,
@@ -192,6 +203,7 @@ class ServiceContainer:
                 demo_classroom = ClassroomORM(
                     school_id=demo_school.id,
                     teacher_user_id=demo_user.id,
+                    textbook_id=default_textbook_id,
                     name="八年级1班",
                     grade_level="初二",
                     invite_code="ZYU-DEMO01",
@@ -201,6 +213,7 @@ class ServiceContainer:
                 session.flush()
             else:
                 demo_classroom.invite_code = "ZYU-DEMO01"
+                demo_classroom.textbook_id = demo_classroom.textbook_id or default_textbook_id
             demo_profile = session.execute(
                 select(StudentProfileORM).where(StudentProfileORM.user_id == demo_user.id)
             ).scalars().first()
@@ -210,6 +223,7 @@ class ServiceContainer:
                     school_id=demo_school.id,
                     classroom_id=demo_classroom.id,
                     teacher_user_id=demo_user.id,
+                    textbook_id=default_textbook_id,
                     name="小余",
                     grade_level="初二",
                     target_subject="数学",
@@ -234,6 +248,7 @@ class ServiceContainer:
                 demo_profile.school_id = demo_profile.school_id or demo_school.id
                 demo_profile.classroom_id = demo_profile.classroom_id or demo_classroom.id
                 demo_profile.teacher_user_id = demo_profile.teacher_user_id or demo_user.id
+                demo_profile.textbook_id = demo_profile.textbook_id or default_textbook_id
                 existing_enrollment = session.execute(
                     select(ClassroomEnrollmentORM).where(
                         ClassroomEnrollmentORM.classroom_id == demo_classroom.id,

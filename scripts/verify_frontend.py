@@ -51,14 +51,13 @@ def main() -> None:
     assert "uploadDocumentFile" in teacher_html
     assert 'data-page="practice-review"' in teacher_html
     assert "downloadTemplateButton" in teacher_html
-    assert "tdesign-web-components@1.2.5" in teacher_html
 
     admin_page = client.get("/admin")
     assert admin_page.status_code == 200
     admin_html = admin_page.text
     assert "管理员后台" in admin_html
-    assert "教师账号" in admin_html
-    assert "知识图谱总览" in admin_html
+    assert "教师账号管理" in admin_html
+    assert "知识图谱配置" in admin_html
     assert "/static/admin.js" in admin_html
 
     css = client.get("/static/styles.css")

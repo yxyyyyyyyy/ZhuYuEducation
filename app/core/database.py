@@ -53,6 +53,7 @@ class StudentProfileORM(Base):
     school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     classroom_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     teacher_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    textbook_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(120))
     grade_level: Mapped[str] = mapped_column(String(80))
     target_subject: Mapped[str] = mapped_column(String(80))
@@ -139,6 +140,7 @@ class ClassroomORM(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     teacher_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    textbook_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     grade_level: Mapped[str] = mapped_column(String(80), default="")
     invite_code: Mapped[str] = mapped_column(String(40), default=lambda: f"ZYU-{secrets.token_hex(3).upper()}", unique=True, index=True)
@@ -162,7 +164,51 @@ class AnnouncementORM(Base):
     school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255))
     content: Mapped[str] = mapped_column(Text)
+    content_html: Mapped[str] = mapped_column(Text, default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    is_pinned: Mapped[int] = mapped_column(Integer, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AnnouncementDraftORM(Base):
+    __tablename__ = "announcement_drafts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    content_html: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class TextbookORM(Base):
+    __tablename__ = "textbooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[int] = mapped_column(Integer, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    is_default: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class KnowledgeNodeORM(Base):
+    __tablename__ = "knowledge_nodes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[int] = mapped_column(Integer, index=True)
+    textbook_id: Mapped[int] = mapped_column(Integer, index=True)
+    node_key: Mapped[str] = mapped_column(String(120), index=True)
+    parent_node_key: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    level: Mapped[int] = mapped_column(Integer, index=True)
+    subject: Mapped[str] = mapped_column(String(80), default="", index=True)
+    grade_level: Mapped[str] = mapped_column(String(80), default="", index=True)
+    topic_ref_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    is_deleted: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class ClassroomEnrollmentORM(Base):
@@ -305,6 +351,8 @@ def _migrate_sqlite_schema() -> None:
             migration_sql.append("ALTER TABLE student_profiles ADD COLUMN classroom_id INTEGER")
         if "teacher_user_id" not in profile_columns:
             migration_sql.append("ALTER TABLE student_profiles ADD COLUMN teacher_user_id INTEGER")
+        if "textbook_id" not in profile_columns:
+            migration_sql.append("ALTER TABLE student_profiles ADD COLUMN textbook_id INTEGER")
 
     if "classrooms" in existing_tables:
         classroom_columns = {column["name"] for column in inspector.get_columns("classrooms")}
@@ -314,6 +362,19 @@ def _migrate_sqlite_schema() -> None:
             migration_sql.append("ALTER TABLE classrooms ADD COLUMN grade_level VARCHAR(80) DEFAULT ''")
         if "invite_code" not in classroom_columns:
             migration_sql.append("ALTER TABLE classrooms ADD COLUMN invite_code VARCHAR(40)")
+        if "textbook_id" not in classroom_columns:
+            migration_sql.append("ALTER TABLE classrooms ADD COLUMN textbook_id INTEGER")
+
+    if "announcements" in existing_tables:
+        announcement_columns = {column["name"] for column in inspector.get_columns("announcements")}
+        if "content_html" not in announcement_columns:
+            migration_sql.append("ALTER TABLE announcements ADD COLUMN content_html TEXT")
+        if "summary" not in announcement_columns:
+            migration_sql.append("ALTER TABLE announcements ADD COLUMN summary TEXT DEFAULT ''")
+        if "is_pinned" not in announcement_columns:
+            migration_sql.append("ALTER TABLE announcements ADD COLUMN is_pinned INTEGER DEFAULT 0")
+        if "updated_at" not in announcement_columns:
+            migration_sql.append("ALTER TABLE announcements ADD COLUMN updated_at DATETIME")
 
     if "question_bank" in existing_tables:
         question_columns = {column["name"] for column in inspector.get_columns("question_bank")}
@@ -382,3 +443,8 @@ def _migrate_sqlite_schema() -> None:
             connection.exec_driver_sql("UPDATE practice_records SET evaluation_status = 'graded' WHERE evaluation_status IS NULL OR evaluation_status = ''")
             connection.exec_driver_sql("UPDATE practice_records SET review_reason = '' WHERE review_reason IS NULL")
             connection.exec_driver_sql("UPDATE practice_records SET mastery_applied = 1 WHERE mastery_applied IS NULL")
+        if "announcements" in existing_tables:
+            connection.exec_driver_sql("UPDATE announcements SET content_html = content WHERE content_html IS NULL OR content_html = ''")
+            connection.exec_driver_sql("UPDATE announcements SET summary = substr(content, 1, 160) WHERE summary IS NULL OR summary = ''")
+            connection.exec_driver_sql("UPDATE announcements SET is_pinned = 0 WHERE is_pinned IS NULL")
+            connection.exec_driver_sql("UPDATE announcements SET updated_at = created_at WHERE updated_at IS NULL")

@@ -132,6 +132,7 @@ class StudentProfileSummary(BaseModel):
     school_id: Optional[int] = None
     classroom_id: Optional[int] = None
     teacher_user_id: Optional[int] = None
+    textbook_id: Optional[int] = None
     name: str
     grade_level: str
     target_subject: str
@@ -146,6 +147,7 @@ class StudentProfileCreate(BaseModel):
     school_id: Optional[int] = None
     classroom_id: Optional[int] = None
     teacher_user_id: Optional[int] = None
+    textbook_id: Optional[int] = None
 
 
 class StudentProfileDetail(StudentProfileSummary):
@@ -366,6 +368,7 @@ class RagDocument(BaseModel):
 
 class ClassroomCreate(BaseModel):
     school_id: Optional[int] = None
+    textbook_id: Optional[int] = None
     name: str
     grade_level: str = ""
     description: str = ""
@@ -377,6 +380,7 @@ class ClassroomView(BaseModel):
     school_name: str = ""
     teacher_user_id: int
     teacher_name: str = ""
+    textbook_id: Optional[int] = None
     name: str
     grade_level: str = ""
     invite_code: str = ""
@@ -400,11 +404,15 @@ class TeacherOption(BaseModel):
     full_name: str
     email: str
     school_id: Optional[int] = None
+    classroom_count: int = 0
+    student_count: int = 0
 
 
 class AnnouncementCreate(BaseModel):
     title: str = Field(min_length=1, max_length=255)
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1, max_length=12000)
+    content_html: str = Field(default="", max_length=24000)
+    is_pinned: bool = False
 
 
 class AnnouncementView(BaseModel):
@@ -412,7 +420,61 @@ class AnnouncementView(BaseModel):
     school_id: Optional[int] = None
     title: str
     content: str
+    content_html: str = ""
+    summary: str = ""
+    is_pinned: bool = False
     created_at: datetime
+    updated_at: datetime | None = None
+
+
+class TeacherManageItem(TeacherOption):
+    created_at: datetime | None = None
+
+
+class TeacherImportResult(BaseModel):
+    row_index: int
+    full_name: str = ""
+    email: str = ""
+    imported: bool
+    reason: str = ""
+    teacher_id: Optional[int] = None
+
+
+class TeacherImportResponse(BaseModel):
+    imported_count: int
+    skipped_count: int
+    rows: List[TeacherImportResult] = Field(default_factory=list)
+
+
+class AnnouncementDraftView(BaseModel):
+    id: int
+    title: str = ""
+    content_html: str = ""
+    updated_at: datetime
+
+
+class TextbookView(BaseModel):
+    id: int
+    school_id: int
+    name: str
+    is_default: bool = False
+
+
+class KnowledgeNodeView(BaseModel):
+    id: int
+    node_key: str
+    parent_node_key: Optional[str] = None
+    name: str
+    level: int
+    subject: str = ""
+    grade_level: str = ""
+    topic_ref_id: Optional[str] = None
+    sort_order: int = 0
+    question_count: int = 0
+    children: List["KnowledgeNodeView"] = Field(default_factory=list)
+
+
+KnowledgeNodeView.model_rebuild()
 
 
 class AdminDashboard(BaseModel):

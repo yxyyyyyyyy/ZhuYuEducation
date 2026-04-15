@@ -88,6 +88,16 @@ class AuthService:
         with sql_repository.session() as session:
             session.execute(delete(AuthSessionORM).where(AuthSessionORM.token == token))
 
+    def set_password(self, user_id: int, new_password: str) -> None:
+        if len(new_password or "") < 8:
+            raise ValueError("password length must be at least 8")
+        with sql_repository.session() as session:
+            user = session.execute(select(UserORM).where(UserORM.id == user_id)).scalars().first()
+            if not user:
+                raise ValueError("user not found")
+            user.password_hash = pwd_context.hash(new_password)
+            session.execute(delete(AuthSessionORM).where(AuthSessionORM.user_id == user_id))
+
     def _is_expired(self, created_at: datetime) -> bool:
         try:
             ttl_hours = float(os.getenv("SESSION_TTL_HOURS", "168"))

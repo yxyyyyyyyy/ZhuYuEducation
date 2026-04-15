@@ -4,7 +4,7 @@ from datetime import date
 
 from sqlalchemy import select
 
-from app.core.database import ClassroomEnrollmentORM, StudentMasteryORM, StudentProfileORM
+from app.core.database import ClassroomEnrollmentORM, ClassroomORM, StudentMasteryORM, StudentProfileORM
 from app.domain.models import (
     MasteryUpsertRequest,
     StudentDashboard,
@@ -29,6 +29,7 @@ class StudentService:
                     school_id=item.school_id,
                     classroom_id=item.classroom_id,
                     teacher_user_id=item.teacher_user_id,
+                    textbook_id=item.textbook_id,
                     name=item.name,
                     grade_level=item.grade_level,
                     target_subject=item.target_subject,
@@ -39,11 +40,19 @@ class StudentService:
 
     def create_profile(self, user_id: int, request: StudentProfileCreate) -> StudentProfileSummary:
         with sql_repository.session() as session:
+            textbook_id = request.textbook_id
+            if request.classroom_id and textbook_id is None:
+                classroom = session.execute(
+                    select(ClassroomORM).where(ClassroomORM.id == request.classroom_id)
+                ).scalars().first()
+                if classroom:
+                    textbook_id = classroom.textbook_id
             profile = StudentProfileORM(
                 user_id=user_id,
                 school_id=request.school_id,
                 classroom_id=request.classroom_id,
                 teacher_user_id=request.teacher_user_id,
+                textbook_id=textbook_id,
                 name=request.name,
                 grade_level=request.grade_level,
                 target_subject=request.target_subject,
@@ -59,6 +68,7 @@ class StudentService:
                 school_id=profile.school_id,
                 classroom_id=profile.classroom_id,
                 teacher_user_id=profile.teacher_user_id,
+                textbook_id=textbook_id,
                 name=profile.name,
                 grade_level=profile.grade_level,
                 target_subject=profile.target_subject,
@@ -82,6 +92,7 @@ class StudentService:
                 school_id=profile.school_id,
                 classroom_id=profile.classroom_id,
                 teacher_user_id=profile.teacher_user_id,
+                textbook_id=profile.textbook_id,
                 name=profile.name,
                 grade_level=profile.grade_level,
                 target_subject=profile.target_subject,
@@ -131,6 +142,7 @@ class StudentService:
                 school_id=profile.school_id,
                 classroom_id=profile.classroom_id,
                 teacher_user_id=profile.teacher_user_id,
+                textbook_id=profile.textbook_id,
                 name=profile.name,
                 grade_level=profile.grade_level,
                 target_subject=profile.target_subject,

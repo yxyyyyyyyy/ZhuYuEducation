@@ -14,6 +14,7 @@ from app.core.database import (
     SchoolORM,
     StudentMasteryORM,
     StudentProfileORM,
+    TextbookORM,
     UserORM,
 )
 from app.domain.models import ClassroomCreate, ClassroomView, SchoolCreate, SchoolView, TeacherDashboard, TeacherOption, TeacherStudentSummary
@@ -173,6 +174,7 @@ class TeacherService:
                     school_name=schools[row.school_id].name if row.school_id in schools else "",
                     teacher_user_id=row.teacher_user_id,
                     teacher_name=teachers[row.teacher_user_id].full_name if row.teacher_user_id in teachers else "",
+                    textbook_id=row.textbook_id,
                     name=row.name,
                     grade_level=row.grade_level or "",
                     invite_code=row.invite_code or "",
@@ -192,9 +194,18 @@ class TeacherService:
                 raise ValueError("teacher school not found")
             if teacher.school_id and school_id != teacher.school_id:
                 raise ValueError("school is outside current teacher")
+            textbook_id = request.textbook_id
+            if textbook_id is None:
+                textbook_row = session.execute(
+                    select(TextbookORM)
+                    .where(TextbookORM.school_id == school_id)
+                    .order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
+                ).scalars().first()
+                textbook_id = textbook_row.id if textbook_row else None
             row = ClassroomORM(
                 school_id=school_id,
                 teacher_user_id=teacher_user_id,
+                textbook_id=textbook_id,
                 name=request.name,
                 grade_level=request.grade_level,
                 description=request.description,
