@@ -21,6 +21,9 @@ class QuestionType(str, Enum):
     steps = "steps"
 
 
+KNOWLEDGE_TIERS = ["基础知识点", "核心知识点", "扩展知识点"]
+
+
 class Topic(BaseModel):
     id: str
     name: str
@@ -41,7 +44,10 @@ class Topic(BaseModel):
 class Question(BaseModel):
     id: str
     topic_id: str
+    knowledge_l1_id: str = ""
+    knowledge_l2_id: str = ""
     stem: str
+    difficulty_level: int = Field(default=3, ge=1, le=5)
     difficulty: float
     answer: str
     explanation: str
@@ -49,6 +55,7 @@ class Question(BaseModel):
     options: List[QuestionOption] = Field(default_factory=list)
     blank_count: int = Field(default=1, ge=1)
     score_points: List[ScorePoint] = Field(default_factory=list)
+    knowledge_tiers: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
 
 
@@ -456,6 +463,8 @@ class AnnouncementDraftView(BaseModel):
 class TextbookView(BaseModel):
     id: int
     school_id: int
+    grade_level: str = ""
+    subject: str = ""
     name: str
     is_default: bool = False
 
@@ -523,11 +532,15 @@ class TeacherDashboard(BaseModel):
 
 class QuestionBankImportItem(BaseModel):
     id: str = Field(min_length=1, max_length=120)
-    topic_id: str = Field(min_length=1, max_length=120)
+    knowledge_l1_id: str = Field(min_length=1, max_length=120)
+    knowledge_l2_id: str = Field(min_length=1, max_length=120)
     stem: str = Field(min_length=1, max_length=4000)
-    difficulty: float = Field(ge=0.0, le=1.0)
+    difficulty_level: int = Field(ge=1, le=5)
     answer: str = Field(min_length=1, max_length=4000)
     explanation: str = Field(default="", max_length=8000)
+    knowledge_tiers: List[str] = Field(min_length=1)
+    topic_id: Optional[str] = Field(default=None, max_length=120)
+    difficulty: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     question_type: QuestionType = QuestionType.blank
     options: List[QuestionOption] = Field(default_factory=list)
     blank_count: int = Field(default=1, ge=1)
@@ -542,11 +555,15 @@ class QuestionBankImportRequest(BaseModel):
 class QuestionBankItemView(BaseModel):
     id: int
     external_id: str
+    knowledge_l1_id: str
+    knowledge_l2_id: str
     topic_id: str
     stem: str
+    difficulty_level: int = Field(ge=1, le=5)
     difficulty: float
     answer: str
     explanation: str
+    knowledge_tiers: List[str] = Field(default_factory=list)
     question_type: QuestionType = QuestionType.blank
     options: List[QuestionOption] = Field(default_factory=list)
     blank_count: int = Field(default=1, ge=1)
@@ -557,10 +574,11 @@ class QuestionBankItemView(BaseModel):
 
 
 class QuestionGenerateRequest(BaseModel):
-    topic_id: str
+    knowledge_l2_id: str = Field(min_length=1, max_length=120)
+    knowledge_l1_id: Optional[str] = Field(default=None, max_length=120)
     count: int = Field(default=5, ge=1, le=20)
-    difficulty_min: float = Field(default=0.2, ge=0.0, le=1.0)
-    difficulty_max: float = Field(default=0.9, ge=0.0, le=1.0)
+    difficulty_level_min: int = Field(default=2, ge=1, le=5)
+    difficulty_level_max: int = Field(default=4, ge=1, le=5)
     question_type: QuestionType = QuestionType.blank
 
 

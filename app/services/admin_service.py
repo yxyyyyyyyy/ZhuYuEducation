@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import csv
 import io
 import math
@@ -386,13 +387,15 @@ class AdminService:
         self,
         admin_user_id: int,
         q: str = "",
+        knowledge_l1_id: str = "",
+        knowledge_l2_id: str = "",
         topic_id: str = "",
         subject: str = "",
         grade_level: str = "",
         status: str = "",
         question_type: str = "",
-        difficulty_min: float | None = None,
-        difficulty_max: float | None = None,
+        difficulty_level_min: int | None = None,
+        difficulty_level_max: int | None = None,
         page: int = 1,
         page_size: int = 20,
         textbook_id: int | None = None,
@@ -401,8 +404,16 @@ class AdminService:
         safe_page_size = min(max(page_size, 1), 100)
         with sql_repository.session() as session:
             _, school = self._admin_and_school(session, admin_user_id)
-            textbook_id = textbook_id or self.knowledge_config_service.get_default_textbook_id(school.id)
-            topic_meta = self._topic_meta_for_school(school.id, textbook_id)
+            all_textbooks = self.knowledge_config_service.list_textbooks(school.id)
+            topic_meta: dict[str, dict] = {}
+            if textbook_id:
+                topic_meta = self._topic_meta_for_school(school.id, textbook_id)
+            else:
+                for tb in all_textbooks:
+                    extra_meta = self._topic_meta_for_school(school.id, tb.id)
+                    for key, value in extra_meta.items():
+                        if key not in topic_meta:
+                            topic_meta[key] = value
             query = select(QuestionBankORM)
             keyword = (q or "").strip()
             if keyword:
@@ -413,26 +424,34 @@ class AdminService:
                         QuestionBankORM.explanation.like(f"%{keyword}%"),
                     )
                 )
-            if topic_id:
-                query = query.where(QuestionBankORM.topic_id == topic_id)
+            effective_l2_filter = (knowledge_l2_id or topic_id or "").strip()
+            if effective_l2_filter:
+                query = query.where(
+                    (QuestionBankORM.knowledge_l2_id == effective_l2_filter) | (QuestionBankORM.topic_id == effective_l2_filter)
+                )
+            if knowledge_l1_id:
+                query = query.where(QuestionBankORM.knowledge_l1_id == knowledge_l1_id)
             if status:
                 query = query.where(QuestionBankORM.status == status)
             if question_type:
                 query = query.where(QuestionBankORM.question_type == question_type)
-            if difficulty_min is not None:
-                query = query.where(QuestionBankORM.difficulty >= difficulty_min)
-            if difficulty_max is not None:
-                query = query.where(QuestionBankORM.difficulty <= difficulty_max)
+            if difficulty_level_min is not None:
+                query = query.where(QuestionBankORM.difficulty_level >= difficulty_level_min)
+            if difficulty_level_max is not None:
+                query = query.where(QuestionBankORM.difficulty_level <= difficulty_level_max)
             rows = session.execute(query.order_by(QuestionBankORM.created_at.desc())).scalars().all()
 
             filtered = []
             for row in rows:
-                meta = topic_meta.get(row.topic_id) or {}
+                resolved_l2_id = row.knowledge_l2_id or row.topic_id
+                meta = topic_meta.get(resolved_l2_id) or {}
+                if textbook_id and not meta:
+                    continue
                 if subject and meta.get("subject") != subject:
                     continue
                 if grade_level and meta.get("grade_level") != grade_level:
                     continue
-                filtered.append((row, meta))
+                filtered.append((row, meta, resolved_l2_id))
 
             total = len(filtered)
             begin = (safe_page - 1) * safe_page_size
@@ -442,23 +461,40 @@ class AdminService:
                 {
                     "id": row.id,
                     "external_id": row.external_id,
-                    "topic_id": row.topic_id,
+                    "knowledge_l1_id": row.knowledge_l1_id or meta.get("l1_id") or "",
+                    "knowledge_l1_name": meta.get("l1_name") or "",
+                    "knowledge_l2_id": resolved_l2_id,
+                    "knowledge_l2_name": meta.get("topic_name") or resolved_l2_id,
+                    "topic_id": resolved_l2_id,
                     "subject": meta.get("subject") or "未分类",
                     "grade_level": meta.get("grade_level") or "未分层",
-                    "topic_name": meta.get("topic_name") or row.topic_id,
+                    "topic_name": meta.get("topic_name") or resolved_l2_id,
                     "stem": row.stem,
                     "answer": row.answer,
                     "explanation": row.explanation,
+                    "difficulty_level": int(row.difficulty_level or self._difficulty_level_from_float(row.difficulty)),
                     "difficulty": row.difficulty,
+                    "knowledge_tiers": row.knowledge_tiers or ["基础知识点"],
                     "question_type": row.question_type,
                     "status": row.status,
                     "source": row.source,
+                    "tags": row.tags or [],
                     "created_at": row.created_at,
                 }
-                for row, meta in page_rows
+                for row, meta, resolved_l2_id in page_rows
             ]
-            approved_count = sum(1 for row, _ in filtered if row.status == "approved")
-            pending_count = sum(1 for row, _ in filtered if row.status == "pending")
+            approved_count = sum(1 for row, _, _ in filtered if row.status == "approved")
+            pending_count = sum(1 for row, _, _ in filtered if row.status == "pending")
+            categories = []
+            if textbook_id:
+                categories = self.knowledge_config_service.list_tree(school.id, textbook_id)
+            else:
+                categories = self._subject_grade_categories(
+                    all_textbooks,
+                    filtered,
+                    subject_filter=subject,
+                    grade_filter=grade_level,
+                )
             return {
                 "items": items,
                 "total": total,
@@ -471,7 +507,7 @@ class AdminService:
                     "pending": pending_count,
                     "rejected": max(total - approved_count - pending_count, 0),
                 },
-                "categories": self.knowledge_config_service.list_tree(school.id, textbook_id),
+                "categories": categories,
             }
 
     def update_question_bank_status(self, question_ids: list[int], action: str) -> int:
@@ -500,30 +536,53 @@ class AdminService:
         payload = self.list_question_bank_manage(
             admin_user_id=admin_user_id,
             q=filters.get("q", ""),
+            knowledge_l1_id=filters.get("knowledge_l1_id", ""),
+            knowledge_l2_id=filters.get("knowledge_l2_id", ""),
             topic_id=filters.get("topic_id", ""),
             subject=filters.get("subject", ""),
             grade_level=filters.get("grade_level", ""),
             status=filters.get("status", ""),
             question_type=filters.get("question_type", ""),
-            difficulty_min=filters.get("difficulty_min"),
-            difficulty_max=filters.get("difficulty_max"),
+            difficulty_level_min=filters.get("difficulty_level_min"),
+            difficulty_level_max=filters.get("difficulty_level_max"),
             page=1,
             page_size=100000,
             textbook_id=filters.get("textbook_id"),
         )
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["一级目录", "二级目录", "三级知识点", "题目ID", "题目", "答案", "难度", "状态", "题型", "来源"])
+        writer.writerow(
+            [
+                "年级",
+                "学科",
+                "一级知识点ID",
+                "一级知识点",
+                "二级知识点ID",
+                "二级知识点",
+                "题目ID",
+                "题目",
+                "答案",
+                "难度级别",
+                "知识点层级标签",
+                "状态",
+                "题型",
+                "来源",
+            ]
+        )
         for item in sorted(payload["items"], key=lambda row: (row["subject"], row["grade_level"], row["topic_name"], row["external_id"])):
             writer.writerow(
                 [
-                    item["subject"],
                     item["grade_level"],
-                    item["topic_name"],
+                    item["subject"],
+                    item.get("knowledge_l1_id", ""),
+                    item.get("knowledge_l1_name", ""),
+                    item.get("knowledge_l2_id", ""),
+                    item.get("knowledge_l2_name", ""),
                     item["external_id"],
                     item["stem"],
                     item["answer"],
-                    item["difficulty"],
+                    item.get("difficulty_level", 3),
+                    "、".join(item.get("knowledge_tiers", [])),
                     item["status"],
                     item["question_type"],
                     item["source"],
@@ -536,10 +595,23 @@ class AdminService:
             _, school = self._admin_and_school(session, admin_user_id)
         return self.knowledge_config_service.list_textbooks(school.id)
 
-    def create_textbook(self, admin_user_id: int, name: str, set_default: bool = False):
+    def create_textbook(
+        self,
+        admin_user_id: int,
+        name: str,
+        grade_level: str,
+        subject: str,
+        set_default: bool = False,
+    ):
         with sql_repository.session() as session:
             _, school = self._admin_and_school(session, admin_user_id)
-        return self.knowledge_config_service.create_textbook(school.id, name, set_default=set_default)
+        return self.knowledge_config_service.create_textbook(
+            school.id,
+            name,
+            grade_level=grade_level,
+            subject=subject,
+            set_default=set_default,
+        )
 
     def list_knowledge_tree(self, admin_user_id: int, textbook_id: int | None = None):
         with sql_repository.session() as session:
@@ -553,9 +625,8 @@ class AdminService:
             school_id=school.id,
             textbook_id=textbook_id,
             name=payload.get("name", ""),
-            level=int(payload.get("level", 3)),
+            level=int(payload.get("level", 2) or 2),
             parent_node_key=payload.get("parent_node_key"),
-            topic_ref_id=payload.get("topic_ref_id"),
             subject=payload.get("subject", ""),
             grade_level=payload.get("grade_level", ""),
         )
@@ -568,7 +639,6 @@ class AdminService:
             textbook_id=textbook_id,
             node_key=node_key,
             name=payload.get("name"),
-            topic_ref_id=payload.get("topic_ref_id"),
         )
 
     def delete_knowledge_node(self, admin_user_id: int, textbook_id: int, node_key: str) -> int:
@@ -640,14 +710,96 @@ class AdminService:
 
     def _topic_meta_for_school(self, school_id: int, textbook_id: int) -> dict[str, dict]:
         topic_meta = {}
-        for topic in self.knowledge_config_service.list_topics_for_school(school_id, textbook_id):
-            if topic.level < 3:
+        topics = self.knowledge_config_service.list_topics_for_school(school_id, textbook_id)
+        topic_by_id = {item.id: item for item in topics}
+        for topic in topics:
+            if topic.level != 2:
                 continue
-            parent = topic.parent_id or ""
+            parent_id = topic.parent_id or ""
+            parent = topic_by_id.get(parent_id)
             topic_meta[topic.id] = {
                 "subject": topic.subject,
                 "grade_level": topic.grade_level,
                 "topic_name": topic.name,
-                "parent_id": parent,
+                "parent_id": parent_id,
+                "l1_id": parent_id,
+                "l1_name": parent.name if parent else "",
             }
         return topic_meta
+
+    def _subject_grade_categories(
+        self,
+        textbooks: list,
+        filtered_rows: list[tuple],
+        subject_filter: str = "",
+        grade_filter: str = "",
+    ) -> list[dict]:
+        subject_totals: dict[str, int] = defaultdict(int)
+        grade_totals: dict[tuple[str, str], int] = defaultdict(int)
+        for _, meta, _ in filtered_rows:
+            subject = (meta.get("subject") or "未分类").strip() or "未分类"
+            grade = (meta.get("grade_level") or "未分层").strip() or "未分层"
+            subject_totals[subject] += 1
+            grade_totals[(subject, grade)] += 1
+
+        normalized_subject = (subject_filter or "").strip()
+        normalized_grade = (grade_filter or "").strip()
+        visible_textbooks = [
+            item
+            for item in textbooks
+            if (not normalized_subject or (item.subject or "").strip() == normalized_subject)
+            and (not normalized_grade or (item.grade_level or "").strip() == normalized_grade)
+        ]
+        textbook_subjects = {(item.subject or "").strip() for item in visible_textbooks if (item.subject or "").strip()}
+        if normalized_subject:
+            textbook_subjects.add(normalized_subject)
+        subjects = sorted(textbook_subjects | set(subject_totals.keys()))
+        categories: list[dict] = []
+        for subject in subjects:
+            textbook_grades = {
+                (item.grade_level or "").strip()
+                for item in visible_textbooks
+                if (item.subject or "").strip() == subject and (item.grade_level or "").strip()
+            }
+            grades_from_questions = {grade for (subj, grade), count in grade_totals.items() if subj == subject and count > 0}
+            if normalized_grade:
+                textbook_grades.add(normalized_grade)
+            grades = sorted(textbook_grades | grades_from_questions)
+            grade_children = [
+                {
+                    "id": f"grade::{subject}::{grade}",
+                    "node_key": f"grade::{subject}::{grade}",
+                    "name": grade,
+                    "subject": subject,
+                    "grade_level": grade,
+                    "question_count": int(grade_totals.get((subject, grade), 0)),
+                    "children": [],
+                }
+                for grade in grades
+            ]
+            categories.append(
+                {
+                    "id": f"subject::{subject}",
+                    "node_key": f"subject::{subject}",
+                    "name": subject,
+                    "subject": subject,
+                    "grade_level": "",
+                    "question_count": int(subject_totals.get(subject, 0)),
+                    "children": grade_children,
+                }
+            )
+        return categories
+
+    def _difficulty_level_from_float(self, difficulty: float | None) -> int:
+        if difficulty is None:
+            return 3
+        value = float(difficulty)
+        if value < 0.2:
+            return 1
+        if value < 0.4:
+            return 2
+        if value < 0.6:
+            return 3
+        if value < 0.8:
+            return 4
+        return 5

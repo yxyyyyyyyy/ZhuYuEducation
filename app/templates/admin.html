@@ -44,7 +44,7 @@
     .btn-ghost { background: #fff; border: 1px solid #dde2ea; color: #1f2329; }
     .btn-ghost:hover { border-color: #1f5eff; color: #1f5eff; }
     .btn-danger { background: #fff; border: 1px solid #f2c8c8; color: #cf1f1f; }
-    .btn-danger:hover { border-color: #cf1f1f; }
+    .btn-danger:hover { border-color: #cf1f1f; background: #fef2f2; }
     .btn-sm { padding: 4px 10px; font-size: 12px; }
     .btn-block { width: 100%; }
 
@@ -244,7 +244,7 @@
     }
     .announcement-layout {
       display: grid;
-      grid-template-columns: 360px 1fr;
+      grid-template-columns: 420px 1fr;
       gap: 14px;
       align-items: start;
     }
@@ -256,18 +256,41 @@
     .editor-panel.collapsed .editor-main { display: none; }
     .editor-toolbar {
       display: flex;
-      gap: 6px;
+      gap: 4px;
       flex-wrap: wrap;
       margin-bottom: 8px;
+      padding: 6px 8px;
+      background: #f8fafc;
+      border: 1px solid #dde2ea;
+      border-bottom: none;
+      border-radius: 8px 8px 0 0;
+    }
+    .editor-toolbar .btn-sm { padding: 4px 8px; font-size: 12px; }
+    .editor-toolbar .separator {
+      width: 1px; height: 20px; background: #dde2ea;
+      margin: 0 4px; align-self: center;
     }
     .editor-area {
-      min-height: 220px;
+      min-height: 360px;
       border: 1px solid #dde2ea;
-      border-radius: 8px;
-      padding: 10px;
+      border-radius: 0 0 8px 8px;
+      padding: 14px;
       background: #fff;
       overflow: auto;
+      font-size: 14px;
+      line-height: 1.7;
     }
+    .editor-area img {
+      max-width: 100%; height: auto;
+      border-radius: 6px; margin: 8px 0;
+    }
+    .editor-area ul, .editor-area ol { padding-left: 20px; }
+    .editor-area blockquote {
+      border-left: 3px solid #1f5eff;
+      padding-left: 12px; color: #667085;
+      margin: 8px 0;
+    }
+    .editor-area a { color: #1f5eff; }
     .announcement-flow {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -277,26 +300,26 @@
       border: 1px solid #dde2ea;
       border-radius: 8px;
       background: #fff;
-      padding: 10px;
+      padding: 12px;
       position: relative;
     }
     .announcement-card h4 {
       font-size: 16px;
       margin-bottom: 6px;
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
     }
     .announcement-card .summary {
       color: #667085;
       font-size: 13px;
-      display: -webkit-box;
-      -webkit-line-clamp: 3;
-      -webkit-box-orient: vertical;
+      line-height: 1.5;
+      max-height: 160px;
       overflow: hidden;
-      min-height: 54px;
     }
+    .announcement-card .summary img {
+      max-width: 100%; height: auto;
+      border-radius: 4px; margin: 4px 0;
+    }
+    .announcement-card .summary a { color: #1f5eff; }
+    .announcement-card .summary ul, .announcement-card .summary ol { padding-left: 18px; }
     .announcement-card .time {
       color: #667085;
       font-size: 12px;
@@ -312,45 +335,89 @@
       margin-bottom: 6px;
     }
 
-    .question-layout {
-      display: grid;
-      grid-template-columns: 280px 1fr;
-      gap: 14px;
-      align-items: start;
-    }
-    .category-pane { position: sticky; top: 18px; }
-    .category-tree details {
-      border: 1px solid #dde2ea;
-      border-radius: 8px;
-      margin-bottom: 8px;
-      background: #fff;
-      overflow: hidden;
-    }
-    .category-tree summary {
-      padding: 8px 10px;
-      cursor: pointer;
-      font-weight: 600;
+    .category-tags {
       display: flex;
-      justify-content: space-between;
+      flex-wrap: wrap;
       gap: 8px;
+      margin-bottom: 10px;
+    }
+    .category-tag {
+      display: inline-flex;
       align-items: center;
-    }
-    .category-list {
-      padding: 0 10px 10px;
-      display: grid;
-      gap: 6px;
-    }
-    .category-item {
+      gap: 4px;
       border: 1px solid #dde2ea;
-      border-radius: 8px;
+      border-radius: 20px;
       background: #fff;
-      padding: 6px 8px;
-      text-align: left;
+      padding: 5px 14px;
+      font: inherit;
+      font-size: 13px;
       cursor: pointer;
       color: #1f2329;
-      font: inherit;
+      transition: all 0.15s;
     }
-    .category-item:hover, .category-item.active { border-color: #1f5eff; color: #1f5eff; }
+    .category-tag:hover { border-color: #1f5eff; color: #1f5eff; }
+    .category-tag.active { background: #e8efff; border-color: #1f5eff; color: #1f5eff; font-weight: 600; }
+    .category-tag .count { color: #667085; font-size: 11px; }
+    .drawer-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.32);
+      z-index: 270;
+      display: none;
+    }
+    .drawer-mask.show { display: block; }
+    .drawer {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 380px;
+      max-width: 90vw;
+      background: #fff;
+      border-left: 1px solid #dde2ea;
+      box-shadow: -4px 0 20px rgba(18, 39, 74, 0.1);
+      z-index: 280;
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer.show { transform: translateX(0); }
+    .drawer-head {
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid #dde2ea;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .drawer-head h3 { font-size: 16px; margin: 0; }
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 14px 18px;
+    }
+    .drawer-section { margin-bottom: 14px; }
+    .drawer-section h4 { font-size: 13px; color: #667085; margin-bottom: 8px; }
+    .drawer-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border: 1px solid #dde2ea;
+      border-radius: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font: inherit;
+      color: #1f2329;
+      background: #fff;
+      width: 100%;
+      text-align: left;
+      transition: all 0.15s;
+    }
+    .drawer-item:hover { border-color: #1f5eff; color: #1f5eff; }
+    .drawer-item.active { background: #e8efff; border-color: #1f5eff; color: #1f5eff; }
+    .drawer-item .count { color: #667085; font-size: 12px; }
+    .drawer-sub-list { padding-left: 14px; margin-bottom: 8px; }
     .status-badge {
       display: inline-flex;
       align-items: center;
@@ -381,7 +448,13 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      transition: border-color 0.15s, box-shadow 0.15s;
     }
+    .tree-row:hover {
+      border-color: #1f5eff;
+      box-shadow: 0 2px 8px rgba(31, 94, 255, 0.08);
+    }
+    .tree-row:hover .row-actions { opacity: 1; }
     .tree-row .left {
       display: flex;
       align-items: center;
@@ -458,8 +531,8 @@
     }
 
     @media (max-width: 1200px) {
-      .teacher-layout, .announcement-layout, .question-layout, .knowledge-layout { grid-template-columns: 1fr; }
-      .teacher-op, .category-pane, .node-form { position: static; }
+      .teacher-layout, .announcement-layout, .knowledge-layout { grid-template-columns: 1fr; }
+      .teacher-op, .node-form { position: static; }
     }
     @media (max-width: 900px) {
       .sidebar { width: 64px; min-width: 64px; }
@@ -496,7 +569,7 @@
         <button class="nav-btn" data-page="teachers"><span>👨‍🏫</span><span class="text">教师账号</span></button>
         <button class="nav-btn" data-page="announcements"><span>📢</span><span class="text">公告维护</span></button>
         <button class="nav-btn" data-page="questions"><span>📚</span><span class="text">题库总览</span></button>
-        <button class="nav-btn" data-page="knowledge"><span>🌐</span><span class="text">知识图谱</span></button>
+        <button class="nav-btn" data-page="knowledge"><span>📖</span><span class="text">教材管理</span></button>
       </nav>
       <div class="sidebar-foot">
         <button class="nav-btn" onclick="logout()"><span>🚪</span><span class="text">退出登录</span></button>
@@ -595,12 +668,25 @@
                 <span><input id="announcementPinnedInput" type="checkbox" style="width:auto;vertical-align:middle;"> 置顶公告</span>
               </label>
               <div class="editor-toolbar">
-                <button class="btn btn-ghost btn-sm" data-editor-cmd="bold">加粗</button>
-                <button class="btn btn-ghost btn-sm" data-editor-cmd="italic">斜体</button>
-                <button class="btn btn-ghost btn-sm" data-editor-cmd="underline">下划线</button>
-                <button class="btn btn-ghost btn-sm" data-editor-cmd="insertUnorderedList">无序列表</button>
-                <button class="btn btn-ghost btn-sm" data-editor-cmd="insertOrderedList">有序列表</button>
-                <button id="insertImageButton" class="btn btn-ghost btn-sm" type="button">插入图片</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="bold" title="加粗">𝗕</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="italic" title="斜体">𝐼</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="underline" title="下划线">U̲</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="strikeThrough" title="删除线">S̶</button>
+                <div class="separator"></div>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="formatBlock" data-editor-value="H2" title="标题">H2</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="formatBlock" data-editor-value="H3" title="小标题">H3</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="formatBlock" data-editor-value="BLOCKQUOTE" title="引用">❝</button>
+                <div class="separator"></div>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="insertUnorderedList" title="无序列表">• 列表</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="insertOrderedList" title="有序列表">1. 列表</button>
+                <div class="separator"></div>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="justifyLeft" title="左对齐">⬅</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="justifyCenter" title="居中">⬌</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="justifyRight" title="右对齐">➡</button>
+                <div class="separator"></div>
+                <button id="insertImageButton" class="btn btn-ghost btn-sm" type="button" title="插入图片">🖼 图片</button>
+                <button id="insertLinkButton" class="btn btn-ghost btn-sm" type="button" title="插入链接">🔗 链接</button>
+                <button class="btn btn-ghost btn-sm" data-editor-cmd="removeFormat" title="清除格式">🧹 清除</button>
               </div>
               <div id="announcementEditorInput" class="editor-area" contenteditable="true"></div>
               <div id="announcementDraftHint" class="hint" style="margin-top:6px;">草稿待保存</div>
@@ -623,102 +709,127 @@
       <section class="page" data-page="questions">
         <div class="page-header">
           <h2>题库总览</h2>
-          <p>左侧分类筛选（一级/二级/三级）+ 右侧表格展示，支持多维筛选、批量操作、导出与实时统计。</p>
-        </div>
-        <div class="question-layout">
-          <section class="panel category-pane">
-            <h3>分类筛选</h3>
-            <div class="actions" style="margin-bottom:8px;">
-              <button id="clearQuestionCategoryButton" class="btn btn-ghost btn-sm">清空分类</button>
-            </div>
-            <div id="questionCategoryTree" class="category-tree"></div>
-          </section>
-          <section class="panel">
-            <div class="toolbar">
-              <div class="actions">
-                <input id="questionKeywordInput" class="input-inline" placeholder="搜索题目或答案">
-                <select id="questionStatusFilter" class="input-inline" style="min-width:120px;">
-                  <option value="">全部状态</option>
-                  <option value="approved">已审核</option>
-                  <option value="pending">待审核</option>
-                </select>
-                <select id="questionTypeFilter" class="input-inline" style="min-width:120px;">
-                  <option value="">全部题型</option>
-                  <option value="choice">选择题</option>
-                  <option value="judgment">判断题</option>
-                  <option value="blank">填空题</option>
-                  <option value="solution">解答题</option>
-                  <option value="steps">分步题</option>
-                </select>
-                <button id="searchQuestionButton" class="btn btn-primary btn-sm">查询</button>
-                <button id="resetQuestionFilterButton" class="btn btn-ghost btn-sm">重置</button>
-              </div>
-              <div class="actions">
-                <button id="exportQuestionAllButton" class="btn btn-ghost btn-sm">导出全量题库</button>
-                <button id="exportQuestionFilteredButton" class="btn btn-ghost btn-sm">导出筛选结果</button>
-              </div>
-            </div>
-            <div id="questionStatsView" class="stat-grid" style="margin-bottom:10px;"></div>
-            <div class="actions" style="margin-bottom:8px;">
-              <button id="batchApproveQuestionButton" class="btn btn-ghost btn-sm">批量设为已审核</button>
-              <button id="batchPendingQuestionButton" class="btn btn-ghost btn-sm">批量设为待审核</button>
-              <button id="batchDeleteQuestionButton" class="btn btn-danger btn-sm">批量删除</button>
-            </div>
-            <div class="list-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th><input id="selectAllQuestionCheckbox" type="checkbox" style="width:auto;"></th>
-                    <th>一级分类</th>
-                    <th>二级分类</th>
-                    <th>三级知识点</th>
-                    <th>题目</th>
-                    <th>答案</th>
-                    <th>难度</th>
-                    <th>状态</th>
-                    <th>题型</th>
-                  </tr>
-                </thead>
-                <tbody id="questionTableBody"></tbody>
-              </table>
-            </div>
-            <div id="questionPagination" class="pagination"></div>
-          </section>
-        </div>
-      </section>
-
-      <section class="page" data-page="knowledge">
-        <div class="page-header">
-          <h2>知识图谱配置</h2>
-          <p>管理员按学校 / 教材维护「一级目录（学科）→ 二级目录（年级/学段）→ 三级目录（知识点）」。</p>
+          <p>分类筛选 + 表格展示，支持多维筛选、批量操作、导出与实时统计。</p>
         </div>
         <section class="panel">
           <div class="toolbar">
             <div class="actions">
+              <input id="questionKeywordInput" class="input-inline" placeholder="搜索题目或答案">
+              <select id="questionStatusFilter" class="input-inline" style="min-width:120px;">
+                <option value="">全部状态</option>
+                <option value="approved">已审核</option>
+                <option value="pending">待审核</option>
+              </select>
+              <select id="questionTypeFilter" class="input-inline" style="min-width:120px;">
+                <option value="">全部题型</option>
+                <option value="choice">选择题</option>
+                <option value="judgment">判断题</option>
+                <option value="blank">填空题</option>
+                <option value="solution">解答题</option>
+                <option value="steps">分步题</option>
+              </select>
+              <button id="searchQuestionButton" class="btn btn-primary btn-sm">查询</button>
+              <button id="resetQuestionFilterButton" class="btn btn-ghost btn-sm">重置</button>
+            </div>
+            <div class="actions">
+              <button id="exportQuestionAllButton" class="btn btn-ghost btn-sm">导出全量题库</button>
+              <button id="exportQuestionFilteredButton" class="btn btn-ghost btn-sm">导出筛选结果</button>
+            </div>
+          </div>
+          <div id="questionStatsView" class="stat-grid" style="margin-bottom:10px;"></div>
+          <div class="toolbar" style="margin-bottom:8px;">
+            <div class="actions">
+              <select id="questionGradeFilter" class="input-inline" style="min-width:140px;">
+                <option value="">全部年级</option>
+              </select>
+              <select id="questionSubjectFilter" class="input-inline" style="min-width:140px;">
+                <option value="">全部学科</option>
+              </select>
+              <select id="questionTextbookFilter" class="input-inline" style="min-width:260px;">
+                <option value="">全部教材（跨学科）</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button id="reloadQuestionBankButton" class="btn btn-ghost btn-sm">刷新题库</button>
+            </div>
+          </div>
+          <div class="toolbar">
+            <div class="category-tags" id="questionCategoryTags"></div>
+            <div class="actions">
+              <button id="openCategoryDrawerButton" class="btn btn-ghost btn-sm">📂 选择分类</button>
+              <button id="clearQuestionCategoryButton" class="btn btn-ghost btn-sm">清空分类</button>
+            </div>
+          </div>
+          <div id="questionCurrentFilter" class="hint" style="margin-bottom:8px;"></div>
+          <div class="actions" style="margin-bottom:8px;">
+            <button id="batchApproveQuestionButton" class="btn btn-ghost btn-sm">批量设为已审核</button>
+            <button id="batchPendingQuestionButton" class="btn btn-ghost btn-sm">批量设为待审核</button>
+            <button id="batchDeleteQuestionButton" class="btn btn-danger btn-sm">批量删除</button>
+          </div>
+          <div class="list-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th><input id="selectAllQuestionCheckbox" type="checkbox" style="width:auto;"></th>
+                  <th>年级</th>
+                  <th>学科</th>
+                  <th>知识点</th>
+                  <th>标签</th>
+                  <th>题目</th>
+                  <th>答案</th>
+                  <th>难度</th>
+                  <th>状态</th>
+                  <th>题型</th>
+                </tr>
+              </thead>
+              <tbody id="questionTableBody"></tbody>
+            </table>
+          </div>
+          <div id="questionPagination" class="pagination"></div>
+        </section>
+      </section>
+
+      <section class="page" data-page="knowledge">
+        <div class="page-header">
+          <h2>教材管理</h2>
+          <p>按年级、学科维护教材知识树：一级大知识点 → 二级小知识点。</p>
+        </div>
+        <section class="panel">
+          <div class="toolbar">
+            <div class="actions">
+              <select id="textbookGradeFilter" class="input-inline" style="min-width:140px;">
+                <option value="">选择年级</option>
+              </select>
+              <select id="textbookSubjectFilter" class="input-inline" style="min-width:140px;">
+                <option value="">选择学科</option>
+              </select>
               <select id="textbookSelect" class="input-inline" style="min-width:220px;"></select>
-              <input id="newTextbookNameInput" class="input-inline" placeholder="新教材名称">
-              <button id="createTextbookButton" class="btn btn-ghost btn-sm">新增教材</button>
             </div>
             <div class="actions">
               <button id="reloadKnowledgeButton" class="btn btn-ghost btn-sm">刷新</button>
             </div>
           </div>
+          <div class="toolbar" style="margin-top:8px;">
+            <div class="actions">
+              <input id="newTextbookGradeInput" class="input-inline" placeholder="年级（如 初一）" style="min-width:120px;">
+              <input id="newTextbookSubjectInput" class="input-inline" placeholder="学科（如 数学）" style="min-width:120px;">
+              <input id="newTextbookNameInput" class="input-inline" placeholder="教材名称">
+              <button id="createTextbookButton" class="btn btn-ghost btn-sm">新增教材</button>
+            </div>
+          </div>
         </section>
         <div class="knowledge-layout">
           <section class="panel node-form">
-            <h3>知识点操作</h3>
-            <label><span>层级</span>
+            <h3>知识点管理</h3>
+            <label>
+              <span>节点层级</span>
               <select id="knowledgeLevelInput">
-                <option value="1">一级目录（学科）</option>
-                <option value="2">二级目录（年级/学段）</option>
-                <option value="3">三级目录（知识点）</option>
+                <option value="1">一级大知识点</option>
+                <option value="2">二级小知识点</option>
               </select>
             </label>
-            <label><span>父节点</span><select id="knowledgeParentInput"><option value="">无</option></select></label>
-            <label><span>名称</span><input id="knowledgeNameInput" placeholder="请输入名称"></label>
-            <label><span>学科</span><input id="knowledgeSubjectInput" placeholder="如 数学 / 语文"></label>
-            <label><span>年级/学段</span><input id="knowledgeGradeInput" placeholder="如 初一 / 小学五年级"></label>
-            <label><span>三级关联题库知识点</span><select id="knowledgeTopicRefInput"><option value="">请选择</option></select></label>
+            <label><span>一级父节点（新增二级时必选）</span><select id="knowledgeParentInput"><option value="">请先选择一级知识点</option></select></label>
+            <label><span>名称</span><input id="knowledgeNameInput" placeholder="如：方程、遗传学基础"></label>
             <div class="actions">
               <button id="createKnowledgeNodeButton" class="btn btn-primary">新增知识点</button>
               <button id="updateKnowledgeNodeButton" class="btn btn-ghost">保存编辑</button>
@@ -728,7 +839,7 @@
             <div class="actions">
               <button id="batchDeleteKnowledgeNodeButton" class="btn btn-danger">批量删除</button>
             </div>
-            <div id="knowledgeFormHint" class="hint" style="margin-top:8px;">支持拖拽同级节点排序</div>
+            <div id="knowledgeFormHint" class="hint" style="margin-top:8px;">先建一级大知识点，再在其下创建二级小知识点。</div>
           </section>
           <section class="panel tree-board">
             <h3>知识点树</h3>
@@ -751,6 +862,15 @@
     </div>
   </div>
 
-  <script src="/static/admin.js?v=20260415"></script>
+  <div id="categoryDrawerMask" class="drawer-mask"></div>
+  <div id="categoryDrawer" class="drawer">
+    <div class="drawer-head">
+      <h3>分类筛选</h3>
+      <button id="closeCategoryDrawerButton" class="btn btn-ghost btn-sm">✕ 关闭</button>
+    </div>
+    <div class="drawer-body" id="categoryDrawerBody"></div>
+  </div>
+
+  <script src="/static/admin.js?v=20260415_2"></script>
 </body>
 </html>

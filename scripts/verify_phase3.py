@@ -30,6 +30,11 @@ def main() -> None:
     assert teacher.json()["total_students"] >= 1
     print("teacher dashboard ok")
 
+    topics = client.get("/graph/topics", headers=headers)
+    assert topics.status_code == 200
+    l2_topic = next((item for item in topics.json() if item.get("level") == 2 and item.get("parent_id")), None)
+    assert l2_topic, "no level-2 topic found"
+
     imported = client.post(
         "/teacher/question-bank/import",
         headers=headers,
@@ -37,9 +42,11 @@ def main() -> None:
             "questions": [
                 {
                     "id": "verify_q_01",
-                    "topic_id": "functions",
+                    "knowledge_l1_id": l2_topic["parent_id"],
+                    "knowledge_l2_id": l2_topic["id"],
                     "stem": "自变量先确定还是因变量先确定？",
-                    "difficulty": 0.35,
+                    "difficulty_level": 2,
+                    "knowledge_tiers": ["基础知识点"],
                     "answer": "先确定自变量",
                     "explanation": "自变量决定因变量的取值。",
                     "tags": ["概念"],
@@ -78,7 +85,7 @@ def main() -> None:
             "documents": [
                 {
                     "title": "一次函数教师讲义",
-                    "topic_id": "linear_functions",
+                    "topic_id": l2_topic["id"],
                     "doc_type": "handout",
                     "source_name": "教师讲义 C1",
                     "content": "一次函数图像教学时，先引导学生理解斜率与截距，再把解析式映射到图像。",
@@ -94,7 +101,7 @@ def main() -> None:
         headers=headers,
         json={
             "query": "一次函数的斜率和截距",
-            "topic_id": "linear_functions",
+            "topic_id": l2_topic["id"],
             "limit": 5,
         },
     )

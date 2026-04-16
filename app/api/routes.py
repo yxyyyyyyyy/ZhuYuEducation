@@ -165,6 +165,11 @@ def require_mastery_topics(mastery_map: dict, user: UserSummary | None = None, t
             raise HTTPException(status_code=400, detail="mastery topic_id must match the map key")
 
 
+def _leaf_topics(topics: list[Topic]) -> list[Topic]:
+    parent_ids = {item.parent_id for item in topics if item.parent_id}
+    return [item for item in topics if item.id not in parent_ids]
+
+
 def _default_topic_for_grade(
     grade_level: str,
     subject: str,
@@ -177,17 +182,19 @@ def _default_topic_for_grade(
             topics_source = container.knowledge_config_service.list_topics_for_school(school_id, textbook_id)
         except Exception:
             topics_source = container.repository.list_topics()
+    leaf_topics = _leaf_topics(topics_source)
+    leaf_topic_ids = {item.id for item in leaf_topics}
     topics = [
         topic for topic in topics_source
+        if topic.id in leaf_topic_ids
         if topic.subject == subject and (not topic.grade_level or topic.grade_level == grade_level)
-        and topic.level >= 3
     ]
     if not topics:
-        topics = [topic for topic in topics_source if topic.subject == subject and topic.level >= 3]
+        topics = [topic for topic in leaf_topics if topic.subject == subject]
     if not topics:
-        topics = [topic for topic in topics_source if topic.level >= 3]
+        topics = leaf_topics
     if not topics:
-        topics = container.repository.list_topics()
+        topics = _leaf_topics(container.repository.list_topics())
     topics.sort(key=lambda item: (item.sort_order, item.difficulty, item.id))
     return topics[0].id
 
@@ -203,7 +210,12 @@ def _knowledge_tree(school_id: int | None = None, textbook_id: int | None = None
     question_counts = {topic.id: 0 for topic in topics}
     try:
         with engine.connect() as connection:
-            rows = connection.execute(text("SELECT topic_id, COUNT(*) AS cnt FROM question_bank GROUP BY topic_id")).fetchall()
+            rows = connection.execute(
+                text(
+                    "SELECT COALESCE(NULLIF(knowledge_l2_id, ''), topic_id) AS topic_key, COUNT(*) AS cnt "
+                    "FROM question_bank GROUP BY topic_key"
+                )
+            ).fetchall()
             for row in rows:
                 if row[0] in question_counts:
                     question_counts[row[0]] = int(row[1])
@@ -494,13 +506,15 @@ def admin_question_bank(x_session_token: str | None = Header(default=None)) -> l
 @router.get("/admin/question-bank/manage", response_model=dict)
 def admin_manage_question_bank(
     q: str = "",
+    knowledge_l1_id: str = "",
+    knowledge_l2_id: str = "",
     topic_id: str = "",
     subject: str = "",
     grade_level: str = "",
     status: str = "",
     question_type: str = "",
-    difficulty_min: float | None = None,
-    difficulty_max: float | None = None,
+    difficulty_level_min: int | None = None,
+    difficulty_level_max: int | None = None,
     page: int = 1,
     page_size: int = 20,
     textbook_id: int | None = None,
@@ -510,13 +524,15 @@ def admin_manage_question_bank(
     return container.admin_service.list_question_bank_manage(
         admin_user_id=user.id,
         q=q,
+        knowledge_l1_id=knowledge_l1_id,
+        knowledge_l2_id=knowledge_l2_id,
         topic_id=topic_id,
         subject=subject,
         grade_level=grade_level,
         status=status,
         question_type=question_type,
-        difficulty_min=difficulty_min,
-        difficulty_max=difficulty_max,
+        difficulty_level_min=difficulty_level_min,
+        difficulty_level_max=difficulty_level_max,
         page=page,
         page_size=page_size,
         textbook_id=textbook_id,
@@ -571,6 +587,8 @@ def admin_create_textbook(payload: dict, x_session_token: str | None = Header(de
         return container.admin_service.create_textbook(
             user.id,
             name=payload.get("name", ""),
+            grade_level=payload.get("grade_level", ""),
+            subject=payload.get("subject", ""),
             set_default=bool(payload.get("is_default", False)),
         )
     except ValueError as exc:
@@ -740,9 +758,13 @@ def import_question_bank(
     x_session_token: str | None = Header(default=None),
 ) -> list[QuestionBankItemView]:
     user = current_teacher(x_session_token)
-    for question in request.questions:
-        require_optional_topic(question.topic_id, user=user)
-    return container.question_bank_service.import_questions(request)
+    try:
+        for question in request.questions:
+            require_optional_topic(question.knowledge_l2_id, user=user)
+            require_optional_topic(question.knowledge_l1_id, user=user)
+        return container.question_bank_service.import_questions(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/teacher/question-bank", response_model=list[QuestionBankItemView])
@@ -757,10 +779,14 @@ def generate_questions(
     x_session_token: str | None = Header(default=None),
 ) -> QuestionGenerateResponse:
     user = current_teacher(x_session_token)
-    require_topic(request.topic_id, user=user)
-    if request.difficulty_min > request.difficulty_max:
-        raise HTTPException(status_code=400, detail="difficulty_min must be <= difficulty_max")
-    return container.question_bank_service.generate_questions(request)
+    try:
+        require_topic(request.knowledge_l2_id, user=user)
+        require_optional_topic(request.knowledge_l1_id, field_name="knowledge_l1_id", user=user)
+        if request.difficulty_level_min > request.difficulty_level_max:
+            raise HTTPException(status_code=400, detail="difficulty_level_min must be <= difficulty_level_max")
+        return container.question_bank_service.generate_questions(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/teacher/question-bank/pending", response_model=list[QuestionBankItemView])
@@ -784,17 +810,20 @@ def import_csv_questions(
     x_session_token: str | None = Header(default=None),
 ) -> CsvImportResponse:
     current_teacher(x_session_token)
-    return container.question_bank_service.import_csv(csv_content)
+    try:
+        return container.question_bank_service.import_csv(csv_content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/teacher/question-bank/csv-template", response_class=PlainTextResponse)
 def download_csv_template(x_session_token: str | None = Header(default=None)) -> PlainTextResponse:
     current_teacher(x_session_token)
-    template = "\ufeff题目,答案,知识点ID,难度,解析,题型,选项,空数,得分点,标签\n"
-    template += "解方程 3x=12,x=4,equations,0.4,两边除以3,blank,,1,,方程\n"
-    template += "一次函数 y=2x+1 的斜率是多少？,2,linear_functions,0.6,与y=kx+b对照k=2,blank,,1,斜率:1:2,斜率\n"
-    template += "一次函数 y=2x+3 的图像与 y 轴交点是多少？,3,linear_functions,0.5,b=3 表示截距,choice,A:1|B:2|C:3|D:5,1,,选择题\n"
-    template += "判断：一次函数 y=kx+b 中 k 表示斜率。,正确,linear_functions,0.4,k 决定图像倾斜程度,judgment,,1,,判断题\n"
+    template = "\ufeff题目,答案,一级知识点ID,二级知识点ID,难度级别,知识点层级标签,解析,题型,选项,空数,得分点,标签\n"
+    template += "解方程 3x=12,x=4,tb5_l1_数与代数,tb5_l2_方程与不等式,2,基础知识点,两边除以3,blank,,1,,方程\n"
+    template += "一次函数 y=2x+1 的斜率是多少？,2,tb5_l1_数与代数,tb5_l2_函数初步,3,核心知识点,与y=kx+b对照k=2,blank,,1,斜率:1:2,斜率\n"
+    template += "一次函数 y=2x+3 的图像与 y 轴交点是多少？,3,tb5_l1_数与代数,tb5_l2_函数初步,3,核心知识点,截距由 b 决定,choice,A:1|B:2|C:3|D:5,1,,选择题\n"
+    template += "判断：一次函数 y=kx+b 中 k 表示斜率。,正确,tb5_l1_数与代数,tb5_l2_函数初步,2,基础知识点,k 决定图像倾斜程度,judgment,,1,,判断题\n"
     return PlainTextResponse(content=template, media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=question_template.csv"
     })
@@ -1136,7 +1165,9 @@ def analyze_student_mistake(
 ) -> MistakeRecordView:
     user = current_user(x_session_token)
     profile = require_student_profile(student_profile_id, user)
-    question = next((item for item in container.repository.list_questions_by_topic(profile.target_topic_id) if item.id == request.question_id), None)
+    question = container.question_bank_service.get_question(request.question_id)
+    if question is None:
+        question = next((item for item in container.repository.list_questions_by_topic(profile.target_topic_id) if item.id == request.question_id), None)
     if question is None:
         for topic in container.repository.list_topics():
             for item in container.repository.list_questions_by_topic(topic.id):

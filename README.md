@@ -156,6 +156,27 @@ python3 scripts/verify_rag_workspace.py
 python3 scripts/verify_production_readiness.py
 ```
 
+## 课程维度模型（2026-04）
+
+- 知识体系改为：`学校 + 年级 + 学科 -> 教材 -> 一级大知识点 -> 二级小知识点`
+- 同一学校内，`年级 + 学科` 只允许绑定 1 本教材
+- 教材知识点采用教材内独有 `node_key`（例如 `tb5_l1_xxx / tb5_l2_xxx`）
+- 题库字段改为：`knowledge_l1_id + knowledge_l2_id + difficulty_level(1-5) + knowledge_tiers`
+
+如果你从旧数据升级，先执行重建脚本：
+
+```bash
+python3 scripts/rebuild_curriculum_model.py
+```
+
+这个脚本会按“保留账号学校、重建教材树、清空旧题与学习过程数据”的策略重建环境。
+
+如果需要从网上抓取教材目录草稿（需联网），可运行：
+
+```bash
+python3 scripts/fetch_pep_curriculum_outline.py
+```
+
 如果你已经配置了真实 DashScope 和 OpenAI key，建议再手动验证两项：
 
 1. 文档中心导入文档后执行“重建向量”

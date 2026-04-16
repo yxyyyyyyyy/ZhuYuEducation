@@ -57,7 +57,7 @@ def main() -> None:
     admin_html = admin_page.text
     assert "管理员后台" in admin_html
     assert "教师账号管理" in admin_html
-    assert "知识图谱配置" in admin_html
+    assert ("知识图谱配置" in admin_html) or ("教材管理" in admin_html)
     assert "/static/admin.js" in admin_html
 
     css = client.get("/static/styles.css")

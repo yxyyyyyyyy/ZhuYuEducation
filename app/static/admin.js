@@ -25,9 +25,11 @@ const state = {
   },
   question: {
     q: "",
-    topicId: "",
     subject: "",
     gradeLevel: "",
+    textbookId: null,
+    knowledgeL1Id: "",
+    knowledgeL2Id: "",
     status: "",
     questionType: "",
     page: 1,
@@ -43,11 +45,12 @@ const state = {
     textbooks: [],
     activeTextbookId: null,
     tree: [],
-    topicOptions: [],
     selectedNodeKeys: new Set(),
     editingNodeKey: null,
     dragNodeKey: "",
     dragParentKey: "",
+    gradeFilter: "",
+    subjectFilter: "",
   },
 };
 
@@ -423,7 +426,7 @@ function renderAnnouncementList() {
     <article class="announcement-card">
       ${item.is_pinned ? "<span class='pin-tag'>置顶</span>" : ""}
       <h4>${escapeHtml(item.title)}</h4>
-      <div class="summary">${escapeHtml(item.summary || "")}</div>
+      <div class="summary">${item.content_html || escapeHtml(item.summary || "")}</div>
       <div class="time">发布时间：${formatDateTime(item.created_at)}</div>
       <div class="time">更新时间：${formatDateTime(item.updated_at)}</div>
       <div class="row-actions" style="margin-top:8px;">
@@ -523,22 +526,29 @@ function questionTypeText(type) {
 function renderQuestionTable() {
   const target = qs("questionTableBody");
   if (!state.question.items.length) {
-    target.innerHTML = "<tr><td colspan='9' class='empty-state'>暂无题目</td></tr>";
+    target.innerHTML = "<tr><td colspan='10' class='empty-state'>暂无题目</td></tr>";
     return;
   }
-  target.innerHTML = state.question.items.map((item) => `
+  target.innerHTML = state.question.items.map((item) => {
+    const tierTags = item.knowledge_tiers || [];
+    const tagsHtml = tierTags.length
+      ? tierTags.map((t) => `<span style=\"display:inline-block;background:#e8efff;color:#1456f0;border-radius:4px;padding:1px 6px;font-size:11px;margin-right:3px;\">${escapeHtml(t)}</span>`).join("")
+      : "<span style='color:#8f959e'>-</span>";
+    return `
     <tr>
       <td><input type="checkbox" class="question-row-checkbox" data-question-id="${item.id}" ${state.question.selectedIds.has(item.id) ? "checked" : ""} style="width:auto;"></td>
-      <td>${escapeHtml(item.subject)}</td>
       <td>${escapeHtml(item.grade_level)}</td>
-      <td class="core-info"><strong>${escapeHtml(item.topic_name)}</strong><small>${escapeHtml(item.topic_id)}</small></td>
+      <td>${escapeHtml(item.subject)}</td>
+      <td class="core-info"><strong>${escapeHtml(item.topic_name)}</strong><small>${escapeHtml(item.knowledge_l2_id || item.topic_id)}</small></td>
+      <td>${tagsHtml}</td>
       <td>${escapeHtml(item.stem)}</td>
       <td>${escapeHtml(item.answer)}</td>
-      <td>${Number(item.difficulty || 0).toFixed(2)}</td>
+      <td>L${Number(item.difficulty_level || 3)}</td>
       <td>${statusBadge(item.status)}</td>
       <td>${questionTypeText(item.question_type)}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
   document.querySelectorAll(".question-row-checkbox").forEach((box) => {
     box.addEventListener("change", () => {
       const id = Number(box.dataset.questionId);
@@ -548,70 +558,221 @@ function renderQuestionTable() {
   });
 }
 
-function renderQuestionCategoryTree() {
-  const nodeButton = (node) => {
-    if (node.level === 3) {
-      const active = state.question.topicId === node.topic_ref_id ? "active" : "";
-      return `<button class="category-item ${active}" data-category-topic-id="${escapeHtml(node.topic_ref_id || "")}" title="${escapeHtml(node.name)}">${escapeHtml(node.name)}（${node.question_count || 0}）</button>`;
-    }
-    if (node.level === 2) {
-      const active = state.question.gradeLevel === node.grade_level && state.question.subject === node.subject ? "active" : "";
-      return `<button class="category-item ${active}" data-category-subject="${escapeHtml(node.subject || "")}" data-category-grade="${escapeHtml(node.grade_level || "")}">${escapeHtml(node.name)}（${node.question_count || 0}）</button>`;
-    }
-    const active = state.question.subject === node.subject ? "active" : "";
-    return `<button class="category-item ${active}" data-category-subject="${escapeHtml(node.subject || "")}">${escapeHtml(node.name)}（${node.question_count || 0}）</button>`;
-  };
-  const renderNode = (node) => `
-    <details ${node.level <= 2 ? "open" : ""}>
-      <summary>${escapeHtml(node.name)} <span>${node.question_count || 0}</span></summary>
-      <div class="category-list">
-        ${nodeButton(node)}
-        ${(node.children || []).map((child) => renderNode(child)).join("")}
-      </div>
-    </details>
-  `;
-  qs("questionCategoryTree").innerHTML = (state.question.categories || []).map((node) => renderNode(node)).join("") || "<div class='empty-state'>暂无分类</div>";
+function openCategoryDrawer() {
+  qs("categoryDrawerMask").classList.add("show");
+  qs("categoryDrawer").classList.add("show");
+}
 
-  document.querySelectorAll("[data-category-topic-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.question.topicId = button.dataset.categoryTopicId || "";
-      state.question.page = 1;
-      loadQuestionBank().catch(handleError);
+function closeCategoryDrawer() {
+  qs("categoryDrawerMask").classList.remove("show");
+  qs("categoryDrawer").classList.remove("show");
+}
+
+function isQuestionTextbookScope() {
+  return !!state.question.textbookId;
+}
+
+function flattenQuestionCategories(nodes) {
+  const result = [];
+  const queue = [...(nodes || [])];
+  while (queue.length) {
+    const node = queue.shift();
+    if (!node) continue;
+    result.push(node);
+    (node.children || []).forEach((child) => queue.push(child));
+  }
+  return result;
+}
+
+function questionCategoryNameByKey(nodeKey) {
+  if (!nodeKey) return "";
+  const node = flattenQuestionCategories(state.question.categories).find(
+    (item) => (item.node_key || item.topic_ref_id || item.id || "") === nodeKey,
+  );
+  return node ? node.name : nodeKey;
+}
+
+function renderQuestionCategoryTags() {
+  const categories = state.question.categories || [];
+  const target = qs("questionCategoryTags");
+  if (!categories.length) {
+    target.innerHTML = "";
+    return;
+  }
+  if (isQuestionTextbookScope()) {
+    target.innerHTML = categories.map((node) => {
+      const l1Id = node.node_key || node.id || "";
+      const active = state.question.knowledgeL1Id === l1Id && !state.question.knowledgeL2Id ? "active" : "";
+      return `<button class="category-tag ${active}" data-tag-l1-id="${escapeHtml(l1Id)}">${escapeHtml(node.name)}<span class="count">（${node.question_count || 0}）</span></button>`;
+    }).join("");
+    target.querySelectorAll("[data-tag-l1-id]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const l1Id = btn.dataset.tagL1Id || "";
+        if (state.question.knowledgeL1Id === l1Id && !state.question.knowledgeL2Id) {
+          state.question.knowledgeL1Id = "";
+        } else {
+          state.question.knowledgeL1Id = l1Id;
+        }
+        state.question.knowledgeL2Id = "";
+        state.question.page = 1;
+        loadQuestionBank().catch(handleError);
+      });
     });
-  });
-  document.querySelectorAll("[data-category-grade]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.question.topicId = "";
-      state.question.subject = button.dataset.categorySubject || "";
-      state.question.gradeLevel = button.dataset.categoryGrade || "";
-      state.question.page = 1;
-      loadQuestionBank().catch(handleError);
-    });
-  });
-  document.querySelectorAll("[data-category-subject]:not([data-category-grade])").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.question.topicId = "";
-      state.question.subject = button.dataset.categorySubject || "";
+    return;
+  }
+
+  target.innerHTML = categories.map((node) => {
+    const subject = node.subject || "";
+    const active = state.question.subject === subject && !state.question.gradeLevel ? "active" : "";
+    return `<button class="category-tag ${active}" data-tag-subject="${escapeHtml(subject)}">${escapeHtml(node.name)}<span class="count">（${node.question_count || 0}）</span></button>`;
+  }).join("");
+  target.querySelectorAll("[data-tag-subject]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const subject = btn.dataset.tagSubject || "";
+      state.question.textbookId = null;
+      if (state.question.subject === subject && !state.question.gradeLevel) {
+        state.question.subject = "";
+      } else {
+        state.question.subject = subject;
+      }
       state.question.gradeLevel = "";
+      state.question.knowledgeL1Id = "";
+      state.question.knowledgeL2Id = "";
       state.question.page = 1;
+      refreshQuestionScopeFilters();
       loadQuestionBank().catch(handleError);
     });
   });
 }
 
+function renderCategoryDrawerContent() {
+  const categories = state.question.categories || [];
+  const body = qs("categoryDrawerBody");
+  if (!categories.length) {
+    body.innerHTML = "<div class='empty-state'>暂无分类</div>";
+    return;
+  }
+  const activeSubject = state.question.subject;
+  const activeGrade = state.question.gradeLevel;
+  const activeL1 = state.question.knowledgeL1Id;
+  const activeL2 = state.question.knowledgeL2Id;
+  const textbookScope = isQuestionTextbookScope();
+  let html = "";
+  categories.forEach((node) => {
+    html += `<div class="drawer-section">`;
+    if (textbookScope) {
+      const l1Id = node.node_key || node.id || "";
+      const l1Active = activeL1 === l1Id && !activeL2 ? "active" : "";
+      html += `<button class="drawer-item ${l1Active}" data-drawer-l1-id="${escapeHtml(l1Id)}">${escapeHtml(node.name)}<span class="count">${node.question_count || 0}</span></button>`;
+      if (node.children && node.children.length) {
+        html += `<div class="drawer-sub-list">`;
+        node.children.forEach((leaf) => {
+          const l2Id = leaf.topic_ref_id || leaf.node_key || leaf.id || "";
+          const leafActive = activeL2 === l2Id ? "active" : "";
+          html += `<button class="drawer-item ${leafActive}" data-drawer-l2-id="${escapeHtml(l2Id)}" data-drawer-l1-id="${escapeHtml(l1Id)}">${escapeHtml(leaf.name)}<span class="count">${leaf.question_count || 0}</span></button>`;
+        });
+        html += `</div>`;
+      }
+    } else {
+      const subject = node.subject || "";
+      const subjectActive = activeSubject === subject && !activeGrade ? "active" : "";
+      html += `<button class="drawer-item ${subjectActive}" data-drawer-subject="${escapeHtml(subject)}">${escapeHtml(node.name)}<span class="count">${node.question_count || 0}</span></button>`;
+      if (node.children && node.children.length) {
+        html += `<div class="drawer-sub-list">`;
+        node.children.forEach((gradeNode) => {
+          const grade = gradeNode.grade_level || "";
+          const gradeActive = activeSubject === subject && activeGrade === grade ? "active" : "";
+          html += `<button class="drawer-item ${gradeActive}" data-drawer-subject="${escapeHtml(subject)}" data-drawer-grade="${escapeHtml(grade)}">${escapeHtml(gradeNode.name)}<span class="count">${gradeNode.question_count || 0}</span></button>`;
+        });
+        html += `</div>`;
+      }
+    }
+    html += `</div>`;
+  });
+  body.innerHTML = html;
+
+  if (textbookScope) {
+    body.querySelectorAll("[data-drawer-l2-id]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.question.knowledgeL1Id = btn.dataset.drawerL1Id || "";
+        state.question.knowledgeL2Id = btn.dataset.drawerL2Id || "";
+        state.question.page = 1;
+        closeCategoryDrawer();
+        loadQuestionBank().catch(handleError);
+      });
+    });
+    body.querySelectorAll("[data-drawer-l1-id]:not([data-drawer-l2-id])").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        state.question.knowledgeL1Id = btn.dataset.drawerL1Id || "";
+        state.question.knowledgeL2Id = "";
+        state.question.page = 1;
+        closeCategoryDrawer();
+        loadQuestionBank().catch(handleError);
+      });
+    });
+    return;
+  }
+
+  body.querySelectorAll("[data-drawer-grade]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.question.textbookId = null;
+      state.question.subject = btn.dataset.drawerSubject || "";
+      state.question.gradeLevel = btn.dataset.drawerGrade || "";
+      state.question.knowledgeL1Id = "";
+      state.question.knowledgeL2Id = "";
+      state.question.page = 1;
+      refreshQuestionScopeFilters();
+      closeCategoryDrawer();
+      loadQuestionBank().catch(handleError);
+    });
+  });
+  body.querySelectorAll("[data-drawer-subject]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.question.textbookId = null;
+      state.question.subject = btn.dataset.drawerSubject || "";
+      state.question.gradeLevel = "";
+      state.question.knowledgeL1Id = "";
+      state.question.knowledgeL2Id = "";
+      state.question.page = 1;
+      refreshQuestionScopeFilters();
+      closeCategoryDrawer();
+      loadQuestionBank().catch(handleError);
+    });
+  });
+}
+
+function renderQuestionCurrentFilter() {
+  const el = qs("questionCurrentFilter");
+  const parts = [];
+  if (state.question.textbookId) {
+    const textbook = state.knowledge.textbooks.find((item) => item.id === Number(state.question.textbookId));
+    parts.push(`教材：${textbook ? textbook.name : state.question.textbookId}`);
+  } else {
+    parts.push("教材：全教材");
+  }
+  if (state.question.subject) parts.push(`学科：${state.question.subject}`);
+  if (state.question.gradeLevel) parts.push(`年级：${state.question.gradeLevel}`);
+  if (state.question.knowledgeL1Id) parts.push(`一级知识点：${questionCategoryNameByKey(state.question.knowledgeL1Id)}`);
+  if (state.question.knowledgeL2Id) parts.push(`二级知识点：${questionCategoryNameByKey(state.question.knowledgeL2Id)}`);
+  el.textContent = parts.length ? `当前筛选：${parts.join(" / ")}` : "";
+}
+
 async function loadQuestionBank() {
-  if (!state.knowledge.activeTextbookId) return;
   const params = new URLSearchParams({
     q: state.question.q,
-    topic_id: state.question.topicId,
+    knowledge_l1_id: state.question.knowledgeL1Id,
+    knowledge_l2_id: state.question.knowledgeL2Id,
+    topic_id: state.question.knowledgeL2Id,
     subject: state.question.subject,
     grade_level: state.question.gradeLevel,
     status: state.question.status,
     question_type: state.question.questionType,
     page: String(state.question.page),
     page_size: String(state.question.pageSize),
-    textbook_id: String(state.knowledge.activeTextbookId),
   });
+  if (state.question.textbookId) {
+    params.set("textbook_id", String(state.question.textbookId));
+  }
   const payload = await api(`/admin/question-bank/manage?${params.toString()}`);
   state.question.items = payload.items || [];
   state.question.total = payload.total || 0;
@@ -621,7 +782,9 @@ async function loadQuestionBank() {
   state.question.selectedIds = new Set();
   qs("selectAllQuestionCheckbox").checked = false;
   renderQuestionStats();
-  renderQuestionCategoryTree();
+  renderQuestionCategoryTags();
+  renderCategoryDrawerContent();
+  renderQuestionCurrentFilter();
   renderQuestionTable();
   renderPagination(
     "questionPagination",
@@ -650,13 +813,15 @@ async function questionBatch(action) {
 async function exportQuestionBank(filtered) {
   const payload = filtered ? {
     q: state.question.q,
-    topic_id: state.question.topicId,
+    knowledge_l1_id: state.question.knowledgeL1Id,
+    knowledge_l2_id: state.question.knowledgeL2Id,
+    topic_id: state.question.knowledgeL2Id,
     subject: state.question.subject,
     grade_level: state.question.gradeLevel,
     status: state.question.status,
     question_type: state.question.questionType,
-    textbook_id: state.knowledge.activeTextbookId,
-  } : { textbook_id: state.knowledge.activeTextbookId };
+    textbook_id: state.question.textbookId,
+  } : { textbook_id: state.question.textbookId };
   const headers = { "Content-Type": "application/json" };
   if (state.token) headers["X-Session-Token"] = state.token;
   const response = await fetch("/admin/question-bank/export", {
@@ -690,30 +855,31 @@ function flattenKnowledgeTree(nodes) {
 }
 
 function refreshKnowledgeParentOptions() {
-  const level = Number(qs("knowledgeLevelInput").value || 3);
-  const flat = flattenKnowledgeTree(state.knowledge.tree);
-  const parentRows = flat.filter((item) => item.level === level - 1);
+  const parentRows = (state.knowledge.tree || []).filter((item) => item.level === 1);
   const current = qs("knowledgeParentInput").value;
-  const options = ["<option value=''>无</option>"].concat(
+  const options = ["<option value=''>请选择一级知识点</option>"].concat(
     parentRows.map((item) => `<option value="${escapeHtml(item.node_key)}">${escapeHtml(item.name)}</option>`)
   ).join("");
   qs("knowledgeParentInput").innerHTML = options;
   if (current && [...qs("knowledgeParentInput").options].some((item) => item.value === current)) {
     qs("knowledgeParentInput").value = current;
+  } else if (parentRows.length) {
+    qs("knowledgeParentInput").value = parentRows[0].node_key;
   }
-  qs("knowledgeTopicRefInput").disabled = level !== 3;
 }
 
 function renderKnowledgeTree() {
-  const renderNode = (node) => `
+  const renderNode = (node) => {
+    const isLevel1 = node.level === 1;
+    return `
     <li>
       <div class="tree-row" draggable="true" data-node-key="${escapeHtml(node.node_key)}" data-parent-key="${escapeHtml(node.parent_node_key || "")}">
         <div class="left">
           <input type="checkbox" class="knowledge-select" data-node-key="${escapeHtml(node.node_key)}" style="width:auto;" ${state.knowledge.selectedNodeKeys.has(node.node_key) ? "checked" : ""}>
           <span class="drag-handle">⋮⋮</span>
           <div>
-            <div class="node-title">${escapeHtml(node.name)}</div>
-            <div class="node-meta">第 ${node.level} 级 · ${escapeHtml(node.subject || "-")} · ${escapeHtml(node.grade_level || "-")} · 题目 ${node.question_count || 0}</div>
+            <div class="node-title">${isLevel1 ? "📚 " : "· "}${escapeHtml(node.name)}</div>
+            <div class="node-meta">${isLevel1 ? "一级大知识点" : `二级小知识点 · 题目 ${node.question_count || 0}`}</div>
           </div>
         </div>
         <div class="row-actions">
@@ -724,10 +890,11 @@ function renderKnowledgeTree() {
       ${(node.children || []).length ? `<ul>${node.children.map((child) => renderNode(child)).join("")}</ul>` : ""}
     </li>
   `;
+  };
   const target = qs("knowledgeTreeView");
   if (!state.knowledge.tree.length) {
     target.className = "empty-state";
-    target.innerHTML = "暂无知识点";
+    target.innerHTML = "暂无知识点，请先选择教材后新增";
     return;
   }
   target.className = "";
@@ -787,44 +954,135 @@ async function reorderByDrop(targetNodeKey, targetParentKey) {
   await loadKnowledgeTree();
 }
 
-async function loadKnowledgeTopicOptions() {
-  state.knowledge.topicOptions = await api("/admin/knowledge/topic-options");
-  const options = ["<option value=''>请选择</option>"].concat(
-    state.knowledge.topicOptions.map((item) => `
-      <option value="${escapeHtml(item.id)}">${escapeHtml(item.subject)} · ${escapeHtml(item.grade_level || "通用")} · ${escapeHtml(item.name)}</option>
-    `)
-  ).join("");
-  qs("knowledgeTopicRefInput").innerHTML = options;
-}
-
 async function loadTextbooks() {
   state.knowledge.textbooks = await api("/admin/textbooks");
   if (!state.knowledge.textbooks.length) {
     state.knowledge.activeTextbookId = null;
+    state.question.textbookId = null;
+    state.question.subject = "";
+    state.question.gradeLevel = "";
+    qs("textbookGradeFilter").innerHTML = "<option value=''>选择年级</option>";
+    qs("textbookSubjectFilter").innerHTML = "<option value=''>选择学科</option>";
     qs("textbookSelect").innerHTML = "<option value=''>暂无教材</option>";
+    qs("questionGradeFilter").innerHTML = "<option value=''>全部年级</option>";
+    qs("questionSubjectFilter").innerHTML = "<option value=''>全部学科</option>";
+    qs("questionTextbookFilter").innerHTML = "<option value=''>全部教材（跨学科）</option>";
     return;
   }
-  const options = state.knowledge.textbooks.map((item) => `
-    <option value="${item.id}">${escapeHtml(item.name)}${item.is_default ? "（默认）" : ""}</option>
-  `).join("");
-  qs("textbookSelect").innerHTML = options;
-  if (!state.knowledge.activeTextbookId || !state.knowledge.textbooks.some((item) => item.id === Number(state.knowledge.activeTextbookId))) {
-    state.knowledge.activeTextbookId = state.knowledge.textbooks[0].id;
+  const grades = [...new Set(state.knowledge.textbooks.map((t) => t.grade_level).filter(Boolean))].sort();
+  qs("textbookGradeFilter").innerHTML = "<option value=''>选择年级</option>" + grades.map((g) => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join("");
+  if (state.knowledge.gradeFilter && grades.includes(state.knowledge.gradeFilter)) {
+    qs("textbookGradeFilter").value = state.knowledge.gradeFilter;
+  } else {
+    state.knowledge.gradeFilter = "";
   }
-  qs("textbookSelect").value = String(state.knowledge.activeTextbookId);
+  refreshSubjectFilter();
+  refreshTextbookSelect();
+  refreshQuestionScopeFilters();
+}
+
+function refreshSubjectFilter() {
+  const grade = state.knowledge.gradeFilter;
+  const filtered = grade ? state.knowledge.textbooks.filter((t) => t.grade_level === grade) : state.knowledge.textbooks;
+  const subjects = [...new Set(filtered.map((t) => t.subject).filter(Boolean))].sort();
+  qs("textbookSubjectFilter").innerHTML = "<option value=''>选择学科</option>" + subjects.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  if (state.knowledge.subjectFilter && subjects.includes(state.knowledge.subjectFilter)) {
+    qs("textbookSubjectFilter").value = state.knowledge.subjectFilter;
+  } else {
+    state.knowledge.subjectFilter = "";
+  }
+}
+
+function refreshTextbookSelect() {
+  const grade = state.knowledge.gradeFilter;
+  const subject = state.knowledge.subjectFilter;
+  let filtered = state.knowledge.textbooks;
+  if (grade) filtered = filtered.filter((t) => t.grade_level === grade);
+  if (subject) filtered = filtered.filter((t) => t.subject === subject);
+  qs("textbookSelect").innerHTML = filtered.length
+    ? filtered.map((item) => `<option value="${item.id}">${escapeHtml(item.grade_level || "通用")} · ${escapeHtml(item.subject || "综合")} · ${escapeHtml(item.name)}${item.is_default ? "（默认）" : ""}</option>`).join("")
+    : "<option value=''>无匹配教材</option>";
+  if (filtered.length) {
+    if (!state.knowledge.activeTextbookId || !filtered.some((item) => item.id === Number(state.knowledge.activeTextbookId))) {
+      const defaultBook = filtered.find((item) => item.is_default) || filtered[0];
+      state.knowledge.activeTextbookId = defaultBook.id;
+    }
+    qs("textbookSelect").value = String(state.knowledge.activeTextbookId);
+  } else {
+    state.knowledge.activeTextbookId = null;
+  }
+}
+
+function refreshQuestionScopeFilters() {
+  refreshQuestionGradeFilterOptions();
+  refreshQuestionSubjectFilterOptions();
+  refreshQuestionTextbookFilterOptions();
+}
+
+function refreshQuestionGradeFilterOptions() {
+  const grades = [...new Set(state.knowledge.textbooks.map((item) => item.grade_level).filter(Boolean))].sort();
+  qs("questionGradeFilter").innerHTML = "<option value=''>全部年级</option>" + grades.map((grade) => `<option value="${escapeHtml(grade)}">${escapeHtml(grade)}</option>`).join("");
+  if (state.question.gradeLevel && grades.includes(state.question.gradeLevel)) {
+    qs("questionGradeFilter").value = state.question.gradeLevel;
+    return;
+  }
+  state.question.gradeLevel = "";
+}
+
+function refreshQuestionSubjectFilterOptions() {
+  const grade = state.question.gradeLevel;
+  const filtered = grade
+    ? state.knowledge.textbooks.filter((item) => item.grade_level === grade)
+    : state.knowledge.textbooks;
+  const subjects = [...new Set(filtered.map((item) => item.subject).filter(Boolean))].sort();
+  qs("questionSubjectFilter").innerHTML = "<option value=''>全部学科</option>" + subjects.map((subject) => `<option value="${escapeHtml(subject)}">${escapeHtml(subject)}</option>`).join("");
+  if (state.question.subject && subjects.includes(state.question.subject)) {
+    qs("questionSubjectFilter").value = state.question.subject;
+    return;
+  }
+  state.question.subject = "";
+}
+
+function refreshQuestionTextbookFilterOptions() {
+  const grade = state.question.gradeLevel;
+  const subject = state.question.subject;
+  let filtered = state.knowledge.textbooks;
+  if (grade) filtered = filtered.filter((item) => item.grade_level === grade);
+  if (subject) filtered = filtered.filter((item) => item.subject === subject);
+  const options = ["<option value=''>全部教材（跨学科）</option>"];
+  options.push(...filtered.map((item) => `<option value="${item.id}">${escapeHtml(item.grade_level || "通用")} · ${escapeHtml(item.subject || "综合")} · ${escapeHtml(item.name)}${item.is_default ? "（默认）" : ""}</option>`));
+  qs("questionTextbookFilter").innerHTML = options.join("");
+  if (state.question.textbookId && filtered.some((item) => item.id === Number(state.question.textbookId))) {
+    qs("questionTextbookFilter").value = String(state.question.textbookId);
+    return;
+  }
+  state.question.textbookId = null;
+  qs("questionTextbookFilter").value = "";
 }
 
 async function createTextbook() {
   const name = qs("newTextbookNameInput").value.trim();
+  const gradeLevel = qs("newTextbookGradeInput").value.trim();
+  const subject = qs("newTextbookSubjectInput").value.trim();
   if (!name) {
     showToast("请输入教材名称");
     return;
   }
+  if (!gradeLevel) {
+    showToast("请输入教材年级");
+    return;
+  }
+  if (!subject) {
+    showToast("请输入教材学科");
+    return;
+  }
   await api("/admin/textbooks", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, grade_level: gradeLevel, subject }),
   });
   qs("newTextbookNameInput").value = "";
+  qs("newTextbookGradeInput").value = "";
+  qs("newTextbookSubjectInput").value = "";
   await loadTextbooks();
   await Promise.all([loadKnowledgeTree(), loadQuestionBank()]);
   showToast("教材创建成功");
@@ -839,20 +1097,17 @@ async function loadKnowledgeTree() {
 }
 
 function getKnowledgeFormPayload() {
-  const level = Number(qs("knowledgeLevelInput").value || 3);
   const name = qs("knowledgeNameInput").value.trim();
+  const level = Number(qs("knowledgeLevelInput").value || 1);
+  const parentNodeKey = qs("knowledgeParentInput").value || null;
   const payload = {
     textbook_id: state.knowledge.activeTextbookId,
     level,
     name,
-    parent_node_key: qs("knowledgeParentInput").value || null,
-    subject: qs("knowledgeSubjectInput").value.trim(),
-    grade_level: qs("knowledgeGradeInput").value.trim(),
-    topic_ref_id: qs("knowledgeTopicRefInput").value || null,
+    parent_node_key: level === 2 ? parentNodeKey : null,
   };
   if (!name) throw new Error("请填写知识点名称");
-  if (level > 1 && !payload.parent_node_key) throw new Error("请选择父节点");
-  if (level === 3 && !payload.topic_ref_id) throw new Error("三级知识点必须关联题库知识点");
+  if (level === 2 && !payload.parent_node_key) throw new Error("请选择一级知识点");
   return payload;
 }
 
@@ -860,12 +1115,10 @@ function resetKnowledgeForm() {
   state.knowledge.editingNodeKey = null;
   qs("knowledgeLevelInput").value = "1";
   qs("knowledgeNameInput").value = "";
-  qs("knowledgeSubjectInput").value = "";
-  qs("knowledgeGradeInput").value = "";
   qs("knowledgeParentInput").value = "";
-  qs("knowledgeTopicRefInput").value = "";
-  qs("knowledgeFormHint").textContent = "支持拖拽同级节点排序";
+  qs("knowledgeFormHint").textContent = "先建一级大知识点，再在其下创建二级小知识点。";
   refreshKnowledgeParentOptions();
+  updateKnowledgeParentVisibility();
 }
 
 async function createKnowledgeNode() {
@@ -883,14 +1136,17 @@ function startEditKnowledgeNode(nodeKey) {
   const node = flattenKnowledgeTree(state.knowledge.tree).find((item) => item.node_key === nodeKey);
   if (!node) return;
   state.knowledge.editingNodeKey = node.node_key;
-  qs("knowledgeLevelInput").value = String(node.level);
   refreshKnowledgeParentOptions();
+  qs("knowledgeLevelInput").value = String(node.level || 1);
   qs("knowledgeParentInput").value = node.parent_node_key || "";
   qs("knowledgeNameInput").value = node.name || "";
-  qs("knowledgeSubjectInput").value = node.subject || "";
-  qs("knowledgeGradeInput").value = node.grade_level || "";
-  qs("knowledgeTopicRefInput").value = node.topic_ref_id || "";
+  updateKnowledgeParentVisibility();
   qs("knowledgeFormHint").textContent = `正在编辑：${node.name}`;
+}
+
+function updateKnowledgeParentVisibility() {
+  const level = Number(qs("knowledgeLevelInput").value || 1);
+  qs("knowledgeParentInput").disabled = level !== 2;
 }
 
 async function updateKnowledgeNode() {
@@ -967,7 +1223,6 @@ window.logout = logout;
 async function bootstrapData() {
   await loadDashboard();
   await loadTextbooks();
-  await loadKnowledgeTopicOptions();
   await Promise.all([loadTeachers(), loadAnnouncements(), loadKnowledgeTree(), loadQuestionBank()]);
   await loadAnnouncementDraft();
 }
@@ -1022,7 +1277,8 @@ function bindEvents() {
 
   document.querySelectorAll("[data-editor-cmd]").forEach((button) => {
     button.addEventListener("click", () => {
-      document.execCommand(button.dataset.editorCmd, false, null);
+      const value = button.dataset.editorValue || null;
+      document.execCommand(button.dataset.editorCmd, false, value);
       scheduleDraftSave();
     });
   });
@@ -1030,6 +1286,12 @@ function bindEvents() {
     const url = window.prompt("请输入图片地址");
     if (!url) return;
     document.execCommand("insertImage", false, url);
+    scheduleDraftSave();
+  });
+  qs("insertLinkButton").addEventListener("click", () => {
+    const url = window.prompt("请输入链接地址", "https://");
+    if (!url) return;
+    document.execCommand("createLink", false, url);
     scheduleDraftSave();
   });
   qs("announcementTitleInput").addEventListener("input", scheduleDraftSave);
@@ -1067,21 +1329,35 @@ function bindEvents() {
     qs("questionStatusFilter").value = "";
     qs("questionTypeFilter").value = "";
     state.question.q = "";
-    state.question.topicId = "";
+    state.question.knowledgeL1Id = "";
+    state.question.knowledgeL2Id = "";
     state.question.subject = "";
     state.question.gradeLevel = "";
+    state.question.textbookId = null;
     state.question.status = "";
     state.question.questionType = "";
     state.question.page = 1;
+    refreshQuestionScopeFilters();
     loadQuestionBank().catch(handleError);
   });
   qs("clearQuestionCategoryButton").addEventListener("click", () => {
-    state.question.topicId = "";
-    state.question.subject = "";
-    state.question.gradeLevel = "";
+    state.question.knowledgeL1Id = "";
+    state.question.knowledgeL2Id = "";
+    if (!isQuestionTextbookScope()) {
+      state.question.subject = "";
+      state.question.gradeLevel = "";
+      refreshQuestionScopeFilters();
+    }
     state.question.page = 1;
     loadQuestionBank().catch(handleError);
   });
+  qs("reloadQuestionBankButton").addEventListener("click", () => loadQuestionBank().catch(handleError));
+  qs("openCategoryDrawerButton").addEventListener("click", () => {
+    renderCategoryDrawerContent();
+    openCategoryDrawer();
+  });
+  qs("closeCategoryDrawerButton").addEventListener("click", closeCategoryDrawer);
+  qs("categoryDrawerMask").addEventListener("click", closeCategoryDrawer);
   qs("batchApproveQuestionButton").addEventListener("click", () => questionBatch("approve").catch(handleError));
   qs("batchPendingQuestionButton").addEventListener("click", () => questionBatch("reject").catch(handleError));
   qs("batchDeleteQuestionButton").addEventListener("click", () => questionBatch("delete").catch(handleError));
@@ -1094,18 +1370,66 @@ function bindEvents() {
       if (box.checked) state.question.selectedIds.add(Number(box.dataset.questionId));
     });
   });
+  qs("questionGradeFilter").addEventListener("change", () => {
+    state.question.gradeLevel = qs("questionGradeFilter").value;
+    state.question.subject = "";
+    state.question.textbookId = null;
+    state.question.knowledgeL1Id = "";
+    state.question.knowledgeL2Id = "";
+    state.question.page = 1;
+    refreshQuestionSubjectFilterOptions();
+    refreshQuestionTextbookFilterOptions();
+    loadQuestionBank().catch(handleError);
+  });
+  qs("questionSubjectFilter").addEventListener("change", () => {
+    state.question.subject = qs("questionSubjectFilter").value;
+    state.question.textbookId = null;
+    state.question.knowledgeL1Id = "";
+    state.question.knowledgeL2Id = "";
+    state.question.page = 1;
+    refreshQuestionTextbookFilterOptions();
+    loadQuestionBank().catch(handleError);
+  });
+  qs("questionTextbookFilter").addEventListener("change", () => {
+    state.question.textbookId = Number(qs("questionTextbookFilter").value || 0) || null;
+    if (state.question.textbookId) {
+      const textbook = state.knowledge.textbooks.find((item) => item.id === Number(state.question.textbookId));
+      if (textbook) {
+        state.question.gradeLevel = textbook.grade_level || "";
+        state.question.subject = textbook.subject || "";
+      }
+    }
+    state.question.knowledgeL1Id = "";
+    state.question.knowledgeL2Id = "";
+    state.question.page = 1;
+    refreshQuestionScopeFilters();
+    loadQuestionBank().catch(handleError);
+  });
 
+  qs("textbookGradeFilter").addEventListener("change", () => {
+    state.knowledge.gradeFilter = qs("textbookGradeFilter").value;
+    state.knowledge.subjectFilter = "";
+    refreshSubjectFilter();
+    refreshTextbookSelect();
+    loadKnowledgeTree().catch(handleError);
+  });
+  qs("textbookSubjectFilter").addEventListener("change", () => {
+    state.knowledge.subjectFilter = qs("textbookSubjectFilter").value;
+    refreshTextbookSelect();
+    loadKnowledgeTree().catch(handleError);
+  });
   qs("textbookSelect").addEventListener("change", () => {
     state.knowledge.activeTextbookId = Number(qs("textbookSelect").value || 0) || null;
-    Promise.all([loadKnowledgeTree(), loadQuestionBank()]).catch(handleError);
+    loadKnowledgeTree().catch(handleError);
   });
   qs("createTextbookButton").addEventListener("click", () => createTextbook().catch(handleError));
-  qs("reloadKnowledgeButton").addEventListener("click", () => Promise.all([loadKnowledgeTree(), loadQuestionBank()]).catch(handleError));
-  qs("knowledgeLevelInput").addEventListener("change", refreshKnowledgeParentOptions);
+  qs("reloadKnowledgeButton").addEventListener("click", () => loadKnowledgeTree().catch(handleError));
+  qs("knowledgeLevelInput").addEventListener("change", updateKnowledgeParentVisibility);
   qs("createKnowledgeNodeButton").addEventListener("click", () => createKnowledgeNode().catch(handleError));
   qs("updateKnowledgeNodeButton").addEventListener("click", () => updateKnowledgeNode().catch(handleError));
   qs("resetKnowledgeFormButton").addEventListener("click", resetKnowledgeForm);
   qs("batchDeleteKnowledgeNodeButton").addEventListener("click", () => batchDeleteKnowledgeNodes().catch(handleError));
+  updateKnowledgeParentVisibility();
 }
 
 async function bootstrap() {

@@ -88,12 +88,12 @@ class ServiceContainer:
                 session.add_all(
                     [
                         RagDocumentORM(
-                            topic_id="functions",
+                            topic_id=None,
                             title="函数概念卡片",
                             content="函数描述的是输入和输出之间的唯一对应关系。先明确自变量，再观察因变量怎样随之变化。",
                         ),
                         RagDocumentORM(
-                            topic_id="linear_functions",
+                            topic_id=None,
                             title="一次函数图像要点",
                             content="一次函数 y=kx+b 中，k 决定倾斜方向和陡峭程度，b 决定图像与 y 轴的交点。",
                         ),
@@ -105,45 +105,6 @@ class ServiceContainer:
                     ]
                 )
 
-            if not session.execute(select(QuestionBankORM)).scalars().first():
-                for topic in self.repository.list_topics():
-                    for question in self.repository.list_questions_by_topic(topic.id):
-                        session.add(
-                            QuestionBankORM(
-                                external_id=question.id,
-                                topic_id=question.topic_id,
-                                stem=question.stem,
-                                difficulty=question.difficulty,
-                                answer=question.answer,
-                                explanation=question.explanation,
-                                question_type=question.question_type.value,
-                                options=[dump_model(option) for option in question.options],
-                                blank_count=question.blank_count,
-                                score_points=[dump_model(point) for point in question.score_points],
-                                tags=question.tags,
-                            )
-                        )
-
-            for topic in self.repository.list_topics():
-                for question in self.repository.list_questions_by_topic(topic.id):
-                    row = session.execute(
-                        select(QuestionBankORM).where(QuestionBankORM.external_id == question.id)
-                    ).scalars().first()
-                    if row is None:
-                        row = QuestionBankORM(external_id=question.id, source="seed")
-                        session.add(row)
-                    if row and (row.source or "seed") == "seed":
-                        row.topic_id = question.topic_id
-                        row.stem = question.stem
-                        row.difficulty = question.difficulty
-                        row.answer = question.answer
-                        row.explanation = question.explanation
-                        row.question_type = question.question_type.value
-                        row.options = [dump_model(option) for option in question.options]
-                        row.blank_count = question.blank_count
-                        row.score_points = [dump_model(point) for point in question.score_points]
-                        row.tags = question.tags
-
             if not session.execute(select(KnowledgeDocumentORM)).scalars().first():
                 from app.domain.models import KnowledgeDocumentImportItem, KnowledgeDocumentImportRequest
 
@@ -152,21 +113,21 @@ class ServiceContainer:
                         documents=[
                             KnowledgeDocumentImportItem(
                                 title="函数教材导学",
-                                topic_id="functions",
+                                topic_id=None,
                                 doc_type="textbook",
                                 source_name="数学教材七年级下",
                                 content="函数的核心是对应关系。先确定输入量，再判断输出量如何随之变化。自变量决定因变量。",
                             ),
                             KnowledgeDocumentImportItem(
                                 title="一次函数讲义提要",
-                                topic_id="linear_functions",
+                                topic_id=None,
                                 doc_type="handout",
                                 source_name="课堂讲义 A1",
                                 content="一次函数 y=kx+b 中，k 是斜率，b 是截距。学图像时先看 b 的位置，再看 k 的变化方向。",
                             ),
                             KnowledgeDocumentImportItem(
                                 title="函数题解示例",
-                                topic_id="functions",
+                                topic_id=None,
                                 doc_type="solution",
                                 source_name="题解集 01",
                                 content="遇到函数概念题，先判断谁是输入，谁是输出，再把数量关系翻译成生活场景中的含义。",
@@ -185,14 +146,26 @@ class ServiceContainer:
                 session.flush()
             if demo_user and demo_user.school_id is None:
                 demo_user.school_id = demo_school.id
+            self.knowledge_config_service.ensure_seeded(demo_school.id)
             default_textbook = session.execute(
-                select(TextbookORM).where(TextbookORM.school_id == demo_school.id).order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
+                select(TextbookORM)
+                .where(TextbookORM.school_id == demo_school.id)
+                .order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
             ).scalars().first()
             if not default_textbook:
-                default_textbook = TextbookORM(school_id=demo_school.id, name="通用教材", is_default=1)
+                default_textbook = TextbookORM(
+                    school_id=demo_school.id,
+                    grade_level="初二",
+                    subject="数学",
+                    name="初二数学教材",
+                    is_default=1,
+                )
                 session.add(default_textbook)
                 session.flush()
             default_textbook_id = default_textbook.id
+            available_topics = self.knowledge_config_service.list_topics_for_school(demo_school.id, default_textbook_id)
+            default_topic = next((item for item in available_topics if item.level == 2), None)
+            default_topic_id = default_topic.id if default_topic else ""
             demo_classroom = session.execute(
                 select(ClassroomORM).where(
                     ClassroomORM.teacher_user_id == demo_user.id,
@@ -227,12 +200,14 @@ class ServiceContainer:
                     name="小余",
                     grade_level="初二",
                     target_subject="数学",
-                    target_topic_id="linear_functions",
+                    target_topic_id=default_topic_id,
                 )
                 session.add(demo_profile)
                 session.flush()
                 session.add(ClassroomEnrollmentORM(classroom_id=demo_classroom.id, student_profile_id=demo_profile.id))
-                for topic in self.repository.list_topics():
+                for topic in available_topics:
+                    if topic.level != 2:
+                        continue
                     session.add(
                         StudentMasteryORM(
                             student_profile_id=demo_profile.id,
@@ -249,6 +224,8 @@ class ServiceContainer:
                 demo_profile.classroom_id = demo_profile.classroom_id or demo_classroom.id
                 demo_profile.teacher_user_id = demo_profile.teacher_user_id or demo_user.id
                 demo_profile.textbook_id = demo_profile.textbook_id or default_textbook_id
+                if not demo_profile.target_topic_id:
+                    demo_profile.target_topic_id = default_topic_id
                 existing_enrollment = session.execute(
                     select(ClassroomEnrollmentORM).where(
                         ClassroomEnrollmentORM.classroom_id == demo_classroom.id,

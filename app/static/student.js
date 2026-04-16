@@ -114,9 +114,11 @@ function renderQuickStats(profile) {
 }
 
 function topicsBySubject() {
+  const parentIds = new Set(state.topics.map((topic) => topic.parent_id).filter(Boolean));
+  const leafTopics = state.topics.filter((topic) => !parentIds.has(topic.id));
   const groups = [];
   const groupMap = {};
-  state.topics.forEach((topic) => {
+  leafTopics.forEach((topic) => {
     const subject = topic.subject || "其他";
     if (!groupMap[subject]) {
       groupMap[subject] = { subject, topics: [] };
@@ -642,7 +644,7 @@ function renderChat(history) {
 
 async function loadTopics() {
   state.topics = await api("/graph/topics");
-  const options = state.topics.map((topic) => `<option value="${topic.id}">${topic.name}</option>`).join("");
+  const options = topicsBySubject().flatMap((group) => group.topics).map((topic) => `<option value="${topic.id}">${topic.name}</option>`).join("");
   qs("targetTopicId").innerHTML = options;
   qs("chatTopicId").innerHTML = options;
   qs("reportTopicId").innerHTML = options;
@@ -651,12 +653,13 @@ async function loadTopics() {
 function renderTopicSelects(profile) {
   const grade = profile?.grade_level || "";
   const subject = profile?.target_subject || "";
+  const leafTopicIds = new Set(topicsBySubject().flatMap((group) => group.topics).map((topic) => topic.id));
   const topics = state.topics.filter((topic) =>
+    leafTopicIds.has(topic.id) &&
     (!subject || topic.subject === subject) &&
-    (!grade || !topic.grade_level || topic.grade_level === grade) &&
-    topic.level >= 3
+    (!grade || !topic.grade_level || topic.grade_level === grade)
   );
-  const rows = topics.length ? topics : state.topics;
+  const rows = topics.length ? topics : state.topics.filter((topic) => leafTopicIds.has(topic.id));
   const options = rows
     .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
     .map((topic) => `<option value="${topic.id}">${topic.grade_level ? `${topic.grade_level} · ` : ""}${topic.subject} · ${topic.name}</option>`)

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -184,9 +185,14 @@ class AnnouncementDraftORM(Base):
 
 class TextbookORM(Base):
     __tablename__ = "textbooks"
+    __table_args__ = (
+        UniqueConstraint("school_id", "grade_level", "subject", name="uq_textbooks_school_grade_subject"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     school_id: Mapped[int] = mapped_column(Integer, index=True)
+    grade_level: Mapped[str] = mapped_column(String(80), default="", index=True)
+    subject: Mapped[str] = mapped_column(String(80), default="", index=True)
     name: Mapped[str] = mapped_column(String(255))
     is_default: Mapped[int] = mapped_column(Integer, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
@@ -224,6 +230,10 @@ class QuestionBankORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     external_id: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    knowledge_l1_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    knowledge_l2_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    difficulty_level: Mapped[int] = mapped_column(Integer, default=3, index=True)
+    knowledge_tiers: Mapped[list] = mapped_column(JSON, default=list)
     topic_id: Mapped[str] = mapped_column(String(120), index=True)
     stem: Mapped[str] = mapped_column(Text)
     difficulty: Mapped[float] = mapped_column(Float)
@@ -365,6 +375,13 @@ def _migrate_sqlite_schema() -> None:
         if "textbook_id" not in classroom_columns:
             migration_sql.append("ALTER TABLE classrooms ADD COLUMN textbook_id INTEGER")
 
+    if "textbooks" in existing_tables:
+        textbook_columns = {column["name"] for column in inspector.get_columns("textbooks")}
+        if "grade_level" not in textbook_columns:
+            migration_sql.append("ALTER TABLE textbooks ADD COLUMN grade_level VARCHAR(80) DEFAULT ''")
+        if "subject" not in textbook_columns:
+            migration_sql.append("ALTER TABLE textbooks ADD COLUMN subject VARCHAR(80) DEFAULT ''")
+
     if "announcements" in existing_tables:
         announcement_columns = {column["name"] for column in inspector.get_columns("announcements")}
         if "content_html" not in announcement_columns:
@@ -378,6 +395,14 @@ def _migrate_sqlite_schema() -> None:
 
     if "question_bank" in existing_tables:
         question_columns = {column["name"] for column in inspector.get_columns("question_bank")}
+        if "knowledge_l1_id" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN knowledge_l1_id VARCHAR(120) DEFAULT ''")
+        if "knowledge_l2_id" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN knowledge_l2_id VARCHAR(120) DEFAULT ''")
+        if "difficulty_level" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN difficulty_level INTEGER DEFAULT 3")
+        if "knowledge_tiers" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN knowledge_tiers JSON")
         if "question_type" not in question_columns:
             migration_sql.append("ALTER TABLE question_bank ADD COLUMN question_type VARCHAR(40) DEFAULT 'blank'")
         if "options" not in question_columns:
@@ -420,10 +445,42 @@ def _migrate_sqlite_schema() -> None:
         for statement in migration_sql:
             connection.exec_driver_sql(statement)
         if "question_bank" in existing_tables:
+            connection.exec_driver_sql("UPDATE question_bank SET knowledge_l1_id = '' WHERE knowledge_l1_id IS NULL")
+            connection.exec_driver_sql("UPDATE question_bank SET knowledge_l2_id = topic_id WHERE knowledge_l2_id IS NULL OR knowledge_l2_id = ''")
+            connection.exec_driver_sql(
+                "UPDATE question_bank SET knowledge_l1_id = COALESCE(("
+                "SELECT kn.parent_node_key FROM knowledge_nodes kn "
+                "WHERE kn.is_deleted = 0 AND kn.level >= 2 "
+                "AND (kn.node_key = question_bank.knowledge_l2_id OR kn.topic_ref_id = question_bank.knowledge_l2_id) "
+                "LIMIT 1"
+                "), knowledge_l1_id) "
+                "WHERE knowledge_l1_id = ''"
+            )
+            connection.exec_driver_sql(
+                "UPDATE question_bank SET difficulty_level = "
+                "CASE "
+                "WHEN difficulty IS NULL THEN 3 "
+                "WHEN difficulty < 0.2 THEN 1 "
+                "WHEN difficulty < 0.4 THEN 2 "
+                "WHEN difficulty < 0.6 THEN 3 "
+                "WHEN difficulty < 0.8 THEN 4 "
+                "ELSE 5 END "
+                "WHERE difficulty_level IS NULL OR difficulty_level < 1 OR difficulty_level > 5"
+            )
+            connection.exec_driver_sql("UPDATE question_bank SET knowledge_tiers = '[\"基础知识点\"]' WHERE knowledge_tiers IS NULL")
             connection.exec_driver_sql("UPDATE question_bank SET question_type = 'blank' WHERE question_type IS NULL OR question_type = ''")
             connection.exec_driver_sql("UPDATE question_bank SET blank_count = 1 WHERE blank_count IS NULL OR blank_count <= 0")
             connection.exec_driver_sql("UPDATE question_bank SET options = '[]' WHERE options IS NULL")
             connection.exec_driver_sql("UPDATE question_bank SET score_points = '[]' WHERE score_points IS NULL")
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_question_bank_knowledge_l1 ON question_bank(knowledge_l1_id)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_question_bank_knowledge_l2 ON question_bank(knowledge_l2_id)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_question_bank_difficulty_level ON question_bank(difficulty_level)"
+            )
         if "users" in existing_tables:
             connection.exec_driver_sql("UPDATE users SET role = 'student' WHERE role IS NULL OR role = ''")
             connection.exec_driver_sql("UPDATE users SET role = 'teacher' WHERE email = 'demo@zhuyu.local'")
@@ -448,3 +505,11 @@ def _migrate_sqlite_schema() -> None:
             connection.exec_driver_sql("UPDATE announcements SET summary = substr(content, 1, 160) WHERE summary IS NULL OR summary = ''")
             connection.exec_driver_sql("UPDATE announcements SET is_pinned = 0 WHERE is_pinned IS NULL")
             connection.exec_driver_sql("UPDATE announcements SET updated_at = created_at WHERE updated_at IS NULL")
+        if "textbooks" in existing_tables:
+            connection.exec_driver_sql("UPDATE textbooks SET grade_level = '' WHERE grade_level IS NULL")
+            connection.exec_driver_sql("UPDATE textbooks SET subject = '' WHERE subject IS NULL")
+            connection.exec_driver_sql(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_textbooks_school_grade_subject_nonempty "
+                "ON textbooks(school_id, grade_level, subject) "
+                "WHERE grade_level != '' AND subject != ''"
+            )

@@ -11,6 +11,10 @@ const state = {
   practiceReviews: [],
   schools: [],
   classrooms: [],
+  studentSort: "name",
+  dashboardData: null,
+  analyticsData: null,
+  generateTemplates: JSON.parse(localStorage.getItem("zhuyu_generate_templates") || "[]"),
 };
 
 function qs(id) {
@@ -174,16 +178,21 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString("zh-CN", { hour12: false });
 }
 
+function leafTopics() {
+  const parentIds = new Set(state.topics.map((t) => t.parent_id).filter(Boolean));
+  return state.topics.filter((t) => !parentIds.has(t.id));
+}
+
 function getSubjects() {
-  return [...new Set(state.topics.map((t) => t.subject))].sort();
+  return [...new Set(leafTopics().map((t) => t.subject).filter(Boolean))].sort();
 }
 
 function getGradesBySubject(subject) {
-  return [...new Set(state.topics.filter((t) => t.subject === subject).map((t) => t.grade_level).filter(Boolean))].sort();
+  return [...new Set(leafTopics().filter((t) => t.subject === subject).map((t) => t.grade_level).filter(Boolean))].sort();
 }
 
 function getTopicsBySubjectAndGrade(subject, grade) {
-  return state.topics.filter((t) => t.subject === subject && (!grade || t.grade_level === grade));
+  return leafTopics().filter((t) => t.subject === subject && (!grade || t.grade_level === grade));
 }
 
 function initCascade(prefix, opts = {}) {
@@ -230,42 +239,124 @@ function initCascade(prefix, opts = {}) {
 }
 
 function renderTeacherDashboard(data) {
-  qs("teacherSummaryView").innerHTML = `
-    <div class="summary-block">
-      <div class="report-grid">
-        <div class="stat-card"><strong>学生总数</strong><div>${data.total_students}</div></div>
-        <div class="stat-card"><strong>活跃学生</strong><div>${data.active_students}</div></div>
-        <div class="stat-card"><strong>平均掌握度</strong><div>${(data.average_mastery * 100).toFixed(0)}%</div></div>
-        <div class="stat-card"><strong>平均正确率</strong><div>${(data.average_accuracy * 100).toFixed(0)}%</div></div>
-      </div>
+  state.dashboardData = data;
+  const masteryPct = (data.average_mastery * 100).toFixed(0);
+  const accuracyPct = (data.average_accuracy * 100).toFixed(0);
+  const activeRatio = data.total_students > 0 ? ((data.active_students / data.total_students) * 100).toFixed(0) : 0;
+
+  qs("teacherKpiView").innerHTML = `
+    <div class="kpi-card kpi-blue" aria-label="学生总数">
+      <div class="kpi-icon">👤</div>
+      <div><div class="kpi-value">${data.total_students}</div><div class="kpi-label">学生总数</div></div>
+    </div>
+    <div class="kpi-card kpi-green" aria-label="活跃学生">
+      <div class="kpi-icon">🟢</div>
+      <div><div class="kpi-value">${data.active_students}</div><div class="kpi-label">活跃学生</div><div class="kpi-sub">占比 ${activeRatio}%</div></div>
+    </div>
+    <div class="kpi-card kpi-orange" aria-label="平均掌握度">
+      <div class="kpi-icon">📊</div>
+      <div><div class="kpi-value">${masteryPct}%</div><div class="kpi-label">平均掌握度</div></div>
+    </div>
+    <div class="kpi-card kpi-purple" aria-label="平均正确率">
+      <div class="kpi-icon">🎯</div>
+      <div><div class="kpi-value">${accuracyPct}%</div><div class="kpi-label">平均正确率</div></div>
     </div>
   `;
+
+  renderStudentList(data);
+}
+
+function renderStudentList(data) {
   const topicMap = {};
   state.topics.forEach((t) => { topicMap[t.id] = t.name; });
-  qs("teacherStudentsView").innerHTML = data.students.length ? data.students.map((item) => `
-    <div class="timeline-item">
-      <strong>${item.name}</strong>
-      <div>${item.grade_level} · 目标 ${topicMap[item.target_topic_id] || item.target_topic_id}</div>
-      <small>掌握度 ${(item.overall_mastery * 100).toFixed(0)}% · 正确率 ${(item.recent_practice_accuracy * 100).toFixed(0)}%</small>
-    </div>
-  `).join("") : "<div class='empty-state'>暂无学生</div>";
+
+  qs("studentListHeader").innerHTML = `
+    <select id="studentSortSelect" style="width:auto;min-width:110px;padding:4px 8px;font-size:12px;">
+      <option value="name" ${state.studentSort === "name" ? "selected" : ""}>按姓名</option>
+      <option value="mastery" ${state.studentSort === "mastery" ? "selected" : ""}>按掌握度</option>
+      <option value="accuracy" ${state.studentSort === "accuracy" ? "selected" : ""}>按正确率</option>
+    </select>
+  `;
+
+  let students = [...(data.students || [])];
+  if (state.studentSort === "mastery") students.sort((a, b) => b.overall_mastery - a.overall_mastery);
+  else if (state.studentSort === "accuracy") students.sort((a, b) => b.recent_practice_accuracy - a.recent_practice_accuracy);
+  else students.sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh"));
+
+  if (!students.length) {
+    qs("teacherStudentsView").innerHTML = "<div class='empty-state'>暂无学生数据，创建班级后学生注册即可显示</div>";
+    return;
+  }
+
+  qs("teacherStudentsView").innerHTML = students.map((item) => {
+    const masteryPct = (item.overall_mastery * 100).toFixed(0);
+    const accuracyPct = (item.recent_practice_accuracy * 100).toFixed(0);
+    const barClass = item.overall_mastery < 0.4 ? "progress-low" : item.overall_mastery < 0.7 ? "progress-mid" : "progress-high";
+    return `
+      <div class="student-card" data-student-name="${item.name || ""}">
+        <div class="student-left">
+          <div class="student-name">${item.name || "未命名"}</div>
+          <div class="student-meta">${item.grade_level || "-"} · ${topicMap[item.target_topic_id] || item.target_topic_id || "-"}</div>
+        </div>
+        <div class="student-right">
+          <div class="student-stat">
+            <div class="student-stat-value" style="color:${item.overall_mastery < 0.4 ? "#d54941" : item.overall_mastery < 0.7 ? "#f7a440" : "#2ba471"}">${masteryPct}%</div>
+            <div class="student-stat-label">掌握度</div>
+          </div>
+          <div class="progress-bar-wrap"><div class="progress-bar-fill ${barClass}" style="width:${masteryPct}%"></div></div>
+          <div class="student-stat">
+            <div class="student-stat-value" style="color:#8b5cf6">${accuracyPct}%</div>
+            <div class="student-stat-label">正确率</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  qs("studentSortSelect").addEventListener("change", () => {
+    state.studentSort = qs("studentSortSelect").value;
+    renderStudentList(state.dashboardData);
+  });
 }
 
 function renderPracticeAnalytics(data) {
-  const topicMap = {};
-  state.topics.forEach((t) => { topicMap[t.id] = t.name; });
-  qs("practiceAnalyticsView").innerHTML = `
-    <div class="summary-block">
-      <div class="report-grid">
-        <div class="stat-card"><strong>总练习数</strong><div>${data.total_attempts}</div></div>
-        <div class="stat-card"><strong>总正确数</strong><div>${data.correct_attempts}</div></div>
-        <div class="stat-card"><strong>整体正确率</strong><div>${(data.accuracy * 100).toFixed(0)}%</div></div>
+  state.analyticsData = data;
+  const accuracyPct = (data.accuracy * 100).toFixed(0);
+
+  let html = `
+    <div class="kpi-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="kpi-card kpi-blue" aria-label="总练习数">
+        <div class="kpi-icon">📝</div>
+        <div><div class="kpi-value">${data.total_attempts}</div><div class="kpi-label">总练习数</div></div>
       </div>
-      <div class="timeline">
-        ${data.topics.map((item) => `<div class="timeline-item"><strong>${topicMap[item.topic_id] || item.topic_id}</strong><div>练习 ${item.attempt_count} 次 · 正确率 ${(item.accuracy * 100).toFixed(0)}%</div></div>`).join("") || "<div class='empty-state'>暂无练习记录</div>"}
+      <div class="kpi-card kpi-green" aria-label="总正确数">
+        <div class="kpi-icon">✅</div>
+        <div><div class="kpi-value">${data.correct_attempts}</div><div class="kpi-label">总正确数</div></div>
+      </div>
+      <div class="kpi-card kpi-purple" aria-label="整体正确率">
+        <div class="kpi-icon">🎯</div>
+        <div><div class="kpi-value">${accuracyPct}%</div><div class="kpi-label">整体正确率</div></div>
       </div>
     </div>
   `;
+
+  const topicMap = {};
+  state.topics.forEach((t) => { topicMap[t.id] = t.name; });
+
+  if (data.topics && data.topics.length) {
+    html += `<table class="topic-table"><thead><tr><th>知识点</th><th>练习数</th><th>正确率</th><th>掌握度</th></tr></thead><tbody>`;
+    html += data.topics.map((item) => {
+      const accPct = (item.accuracy * 100).toFixed(0);
+      const masteryPct = item.mastery != null ? (item.mastery * 100).toFixed(0) : "-";
+      const accColor = item.accuracy < 0.4 ? "#d54941" : item.accuracy < 0.7 ? "#f7a440" : "#2ba471";
+      return `<tr><td><strong>${topicMap[item.topic_id] || item.topic_id}</strong></td><td>${item.attempt_count}</td><td style="color:${accColor};font-weight:700">${accPct}%</td><td>${masteryPct}${masteryPct !== "-" ? "%" : ""}</td></tr>`;
+    }).join("");
+    html += `</tbody></table>`;
+  } else {
+    html += `<div class="empty-state">暂无练习记录，学生完成练习后即可查看分析</div>`;
+  }
+
+  qs("practiceAnalyticsView").innerHTML = html;
 }
 
 function renderQuestionBank(items) {
@@ -630,12 +721,18 @@ function logout() {
 }
 
 async function loadTeacherDashboard() {
-  const dashboard = await api("/teacher/dashboard");
-  renderTeacherDashboard(dashboard);
+  const spinner = qs("dashboardSpinner");
+  if (spinner) spinner.innerHTML = '<span class="spinner"></span>';
   try {
-    const analytics = await api("/teacher/analytics/practice");
-    renderPracticeAnalytics(analytics);
-  } catch { }
+    const dashboard = await api("/teacher/dashboard");
+    renderTeacherDashboard(dashboard);
+    try {
+      const analytics = await api("/teacher/analytics/practice");
+      renderPracticeAnalytics(analytics);
+    } catch { }
+  } finally {
+    if (spinner) spinner.innerHTML = '';
+  }
 }
 
 async function loadQuestionBank() {
@@ -747,33 +844,97 @@ async function generateQuestions() {
   const count = parseInt(qs("generateCount").value) || 5;
   const difficulty = qs("generateDifficulty").value;
   const questionType = qs("generateQuestionType").value;
+  const includeExplanation = qs("toggleExplanation").classList.contains("on");
+  const includeAnswerSheet = qs("toggleAnswerSheet").classList.contains("on");
 
-  const diffMap = { low: [0.1, 0.35], medium: [0.35, 0.65], high: [0.65, 0.95] };
+  const diffMap = { low: [1, 2], medium: [2, 4], high: [4, 5] };
   const [diffMin, diffMax] = diffMap[difficulty] || diffMap.medium;
+  const topic = state.topics.find((item) => item.id === topicId);
+  const parentL1Id = topic?.parent_id || null;
 
   qs("generateQuestionsButton").disabled = true;
-  qs("generateQuestionsButton").textContent = "生成中...";
+  qs("generateQuestionsButton").innerHTML = '<span class="spinner"></span> 生成中...';
 
   try {
     const result = await api("/teacher/question-bank/generate", {
       method: "POST",
       body: JSON.stringify({
-        topic_id: topicId,
+        knowledge_l2_id: topicId,
+        knowledge_l1_id: parentL1Id,
         count: count,
-        difficulty_min: diffMin,
-        difficulty_max: diffMax,
+        difficulty_level_min: diffMin,
+        difficulty_level_max: diffMax,
         question_type: questionType,
+        include_explanation: includeExplanation,
+        include_answer_sheet: includeAnswerSheet,
       }),
     });
     await loadPendingQuestions();
     await loadQuestionBank();
-    showModal("🎉 生成完成", `成功生成 ${result.generated_count} 道题目，已进入待审核状态。`);
+    showToast(`${result.generated_count} 道题目已生成，待审核`);
+    navigateTo("question-review");
   } catch (error) {
     showToast(`生成失败: ${error.message}`);
   } finally {
     qs("generateQuestionsButton").disabled = false;
-    qs("generateQuestionsButton").textContent = "🤖 开始生成";
+    qs("generateQuestionsButton").innerHTML = '🤖 开始生成';
   }
+}
+
+function saveGenerateTemplate() {
+  const name = window.prompt("请输入模板名称", `${qs("generateSubject").value || "通用"}-${qs("generateDifficulty").value}`);
+  if (!name) return;
+  const template = {
+    name,
+    subject: qs("generateSubject").value,
+    grade: qs("generateGrade").value,
+    topicId: qs("generateTopicId").value,
+    difficulty: qs("generateDifficulty").value,
+    count: qs("generateCount").value,
+    questionType: qs("generateQuestionType").value,
+    includeExplanation: qs("toggleExplanation").classList.contains("on"),
+    includeAnswerSheet: qs("toggleAnswerSheet").classList.contains("on"),
+  };
+  state.generateTemplates.push(template);
+  localStorage.setItem("zhuyu_generate_templates", JSON.stringify(state.generateTemplates));
+  refreshTemplateSelect();
+  showToast("模板已保存");
+}
+
+function applyGenerateTemplate() {
+  const idx = qs("templateSelect").value;
+  if (!idx) return;
+  const template = state.generateTemplates[parseInt(idx)];
+  if (!template) return;
+  if (template.subject) qs("generateSubject").value = template.subject;
+  if (template.grade) qs("generateGrade").value = template.grade;
+  if (template.topicId) qs("generateTopicId").value = template.topicId;
+  qs("generateDifficulty").value = template.difficulty || "medium";
+  qs("generateCount").value = template.count || 5;
+  qs("generateQuestionType").value = template.questionType || "blank";
+  qs("toggleExplanation").classList.toggle("on", template.includeExplanation !== false);
+  qs("toggleAnswerSheet").classList.toggle("on", !!template.includeAnswerSheet);
+  showToast("模板已应用");
+}
+
+function deleteGenerateTemplate() {
+  const idx = qs("templateSelect").value;
+  if (!idx) return;
+  state.generateTemplates.splice(parseInt(idx), 1);
+  localStorage.setItem("zhuyu_generate_templates", JSON.stringify(state.generateTemplates));
+  refreshTemplateSelect();
+  showToast("模板已删除");
+}
+
+function refreshTemplateSelect() {
+  const section = qs("templateSection");
+  const select = qs("templateSelect");
+  if (!state.generateTemplates.length) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  select.innerHTML = "<option value=''>选择模板...</option>" + state.generateTemplates.map((t, i) => `<option value="${i}">${t.name}</option>`).join("");
 }
 
 async function reviewQuestion(questionId, action) {
@@ -959,6 +1120,12 @@ function bindEvents() {
   });
   qs("reloadAnalyticsButton").addEventListener("click", () => loadTeacherDashboard().catch(handleError));
   qs("generateQuestionsButton").addEventListener("click", () => generateQuestions().catch(handleError));
+  qs("saveTemplateButton").addEventListener("click", saveGenerateTemplate);
+  qs("applyTemplateButton").addEventListener("click", applyGenerateTemplate);
+  qs("deleteTemplateButton").addEventListener("click", deleteGenerateTemplate);
+  qs("toggleExplanation").addEventListener("click", () => qs("toggleExplanation").classList.toggle("on"));
+  qs("toggleAnswerSheet").addEventListener("click", () => qs("toggleAnswerSheet").classList.toggle("on"));
+  qs("analyticsTimeFilter").addEventListener("change", () => loadTeacherDashboard().catch(handleError));
   qs("loadPendingButton").addEventListener("click", () => loadPendingQuestions().catch(handleError));
   qs("selectPendingAllButton").addEventListener("click", selectAllPending);
   qs("selectPendingNoneButton").addEventListener("click", selectNonePending);
@@ -1014,6 +1181,7 @@ async function bootstrap() {
   if (mode === "register") toggleTeacherAuthForm("register");
   await loadTopics();
   await loadSchools();
+  refreshTemplateSelect();
   if (state.token) {
     try {
       state.user = await api("/auth/me");

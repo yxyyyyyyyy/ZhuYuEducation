@@ -196,11 +196,21 @@ class TeacherService:
                 raise ValueError("school is outside current teacher")
             textbook_id = request.textbook_id
             if textbook_id is None:
-                textbook_row = session.execute(
-                    select(TextbookORM)
-                    .where(TextbookORM.school_id == school_id)
-                    .order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
-                ).scalars().first()
+                stmt = select(TextbookORM).where(TextbookORM.school_id == school_id)
+                if request.grade_level:
+                    grade_rows = session.execute(
+                        stmt.where(TextbookORM.grade_level == request.grade_level).order_by(TextbookORM.id.asc())
+                    ).scalars().all()
+                    if grade_rows:
+                        textbook_row = next((item for item in grade_rows if (item.subject or "") == "数学"), grade_rows[0])
+                    else:
+                        textbook_row = session.execute(
+                            stmt.order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
+                        ).scalars().first()
+                else:
+                    textbook_row = session.execute(
+                        stmt.order_by(TextbookORM.is_default.desc(), TextbookORM.id.asc())
+                    ).scalars().first()
                 textbook_id = textbook_row.id if textbook_row else None
             row = ClassroomORM(
                 school_id=school_id,

@@ -10,9 +10,10 @@ import uuid
 
 from sqlalchemy import delete, select
 
-from app.core.database import PracticeRecordORM, QuestionBankORM, StudentMasteryORM, StudentProfileORM
+from app.core.database import KnowledgeNodeORM, PracticeRecordORM, QuestionBankORM, StudentMasteryORM, StudentProfileORM
 from app.domain.models import (
     CsvImportResponse,
+    KNOWLEDGE_TIERS,
     PracticeCoachCard,
     PracticeCoachRequest,
     PracticeAnalyticsSummary,
@@ -34,6 +35,7 @@ from app.domain.models import (
     ScorePoint,
     ScorePointResult,
     SimilarQuestionView,
+    Topic,
     WorkedStep,
 )
 from app.repositories.knowledge_repository import KnowledgeRepository
@@ -44,6 +46,7 @@ class QuestionBankService:
     def __init__(self, repository: KnowledgeRepository, llm_service=None) -> None:
         self.repository = repository
         self.llm_service = llm_service
+        self._knowledge_tier_set = set(KNOWLEDGE_TIERS)
 
     def import_questions(self, request: QuestionBankImportRequest) -> list[QuestionBankItemView]:
         imported = []
@@ -55,11 +58,24 @@ class QuestionBankService:
                 if row is None:
                     row = QuestionBankORM(external_id=item.id)
                     session.add(row)
-                row.topic_id = item.topic_id
+                knowledge_l1_id, knowledge_l2_id = self._validate_knowledge_binding(
+                    session,
+                    item.knowledge_l1_id,
+                    item.knowledge_l2_id,
+                )
+                row.knowledge_l1_id = knowledge_l1_id
+                row.knowledge_l2_id = knowledge_l2_id
+                row.topic_id = knowledge_l2_id
                 row.stem = item.stem
-                row.difficulty = item.difficulty
+                row.difficulty_level = int(item.difficulty_level)
+                row.difficulty = (
+                    float(item.difficulty)
+                    if item.difficulty is not None
+                    else self._difficulty_level_to_float(item.difficulty_level)
+                )
                 row.answer = item.answer
                 row.explanation = item.explanation
+                row.knowledge_tiers = self._normalize_knowledge_tiers(item.knowledge_tiers)
                 row.question_type = item.question_type.value
                 row.options = [self._dump_model(option) for option in item.options]
                 row.blank_count = item.blank_count
@@ -77,7 +93,9 @@ class QuestionBankService:
     def list_questions_by_topic(self, topic_id: str) -> list[Question]:
         with sql_repository.session() as session:
             rows = session.execute(
-                select(QuestionBankORM).where(QuestionBankORM.topic_id == topic_id)
+                select(QuestionBankORM).where(
+                    (QuestionBankORM.knowledge_l2_id == topic_id) | (QuestionBankORM.topic_id == topic_id)
+                )
             ).scalars().all()
             return [self._question_from_row(row) for row in rows]
 
@@ -311,7 +329,7 @@ class QuestionBankService:
         question = self.get_question(request.question_id)
         if not question:
             raise ValueError("question not found")
-        topic = self.repository.get_topic(question.topic_id)
+        topic = self._safe_topic(question.topic_id)
         mismatch = bool(
             request.student_answer
             and request.student_answer.strip().lower() != question.answer.strip().lower()
@@ -788,13 +806,21 @@ class QuestionBankService:
 
     def _question_from_row(self, row: QuestionBankORM) -> Question:
         question_type = self._resolve_question_type(row.question_type, row.stem, row.answer, row.score_points or [])
+        knowledge_l2_id = (row.knowledge_l2_id or row.topic_id or "").strip()
+        knowledge_l1_id = (row.knowledge_l1_id or "").strip()
+        difficulty_level = int(row.difficulty_level or self._difficulty_float_to_level(row.difficulty))
+        difficulty = float(row.difficulty if row.difficulty is not None else self._difficulty_level_to_float(difficulty_level))
         return Question(
             id=row.external_id,
-            topic_id=row.topic_id,
+            topic_id=knowledge_l2_id,
+            knowledge_l1_id=knowledge_l1_id,
+            knowledge_l2_id=knowledge_l2_id,
             stem=row.stem,
-            difficulty=row.difficulty,
+            difficulty_level=difficulty_level,
+            difficulty=difficulty,
             answer=row.answer,
             explanation=row.explanation,
+            knowledge_tiers=row.knowledge_tiers or ["基础知识点"],
             question_type=question_type,
             options=row.options or self._infer_options(question_type, row.stem),
             blank_count=row.blank_count or self._infer_blank_count(row.answer),
@@ -893,11 +919,15 @@ class QuestionBankService:
         return QuestionBankItemView(
             id=row.id,
             external_id=row.external_id,
-            topic_id=row.topic_id,
+            knowledge_l1_id=question.knowledge_l1_id,
+            knowledge_l2_id=question.knowledge_l2_id,
+            topic_id=question.topic_id,
             stem=row.stem,
-            difficulty=row.difficulty,
+            difficulty_level=question.difficulty_level,
+            difficulty=question.difficulty,
             answer=row.answer,
             explanation=row.explanation,
+            knowledge_tiers=question.knowledge_tiers or ["基础知识点"],
             question_type=question.question_type,
             options=question.options,
             blank_count=question.blank_count,
@@ -908,14 +938,18 @@ class QuestionBankService:
         )
 
     def generate_questions(self, request: QuestionGenerateRequest) -> QuestionGenerateResponse:
-        topic = self.repository.get_topic(request.topic_id)
+        topic = self._safe_topic(request.knowledge_l2_id)
+        min_level = int(request.difficulty_level_min)
+        max_level = int(request.difficulty_level_max)
+        difficulty_min = self._difficulty_level_to_float(min_level)
+        difficulty_max = self._difficulty_level_to_float(max_level)
         raw_questions = self.llm_service.generate_questions(
             topic_name=topic.name,
             subject=topic.subject,
             subtopics=topic.subtopics,
             count=request.count,
-            difficulty_min=request.difficulty_min,
-            difficulty_max=request.difficulty_max,
+            difficulty_min=difficulty_min,
+            difficulty_max=difficulty_max,
             question_type=request.question_type.value,
         )
         if not raw_questions:
@@ -925,20 +959,34 @@ class QuestionBankService:
 
         saved = []
         with sql_repository.session() as session:
+            knowledge_l1_id, knowledge_l2_id = self._validate_knowledge_binding(
+                session,
+                request.knowledge_l1_id or "",
+                request.knowledge_l2_id,
+            )
             for item in raw_questions:
-                external_id = f"ai_{request.topic_id}_{uuid.uuid4().hex[:8]}"
+                external_id = f"ai_{knowledge_l2_id}_{uuid.uuid4().hex[:8]}"
                 options = item.get("options", [])
                 score_points = item.get("score_points", [])
                 blank_count = item.get("blank_count", 1)
                 if options:
                     blank_count = 1
+                generated_level = self._coerce_difficulty_level(
+                    item.get("difficulty_level"),
+                    item.get("difficulty"),
+                    fallback=min(max_level, max(min_level, 3)),
+                )
                 row = QuestionBankORM(
                     external_id=external_id,
-                    topic_id=request.topic_id,
+                    knowledge_l1_id=knowledge_l1_id,
+                    knowledge_l2_id=knowledge_l2_id,
+                    topic_id=knowledge_l2_id,
                     stem=item.get("stem", ""),
-                    difficulty=float(item.get("difficulty", 0.5)),
+                    difficulty_level=generated_level,
+                    difficulty=self._difficulty_level_to_float(generated_level),
                     answer=item.get("answer", ""),
                     explanation=item.get("explanation", ""),
+                    knowledge_tiers=self._normalize_knowledge_tiers(item.get("knowledge_tiers")),
                     question_type=request.question_type.value,
                     options=options,
                     blank_count=blank_count,
@@ -978,13 +1026,17 @@ class QuestionBankService:
         cn_to_en = {
             "题目": "stem", "题干": "stem",
             "答案": "answer",
-            "知识点ID": "topic_id", "知识点": "topic_id",
-            "难度": "difficulty",
+            "一级知识点ID": "knowledge_l1_id", "一级知识点": "knowledge_l1_id",
+            "二级知识点ID": "knowledge_l2_id", "二级知识点": "knowledge_l2_id",
+            "知识点ID": "knowledge_l2_id", "知识点": "knowledge_l2_id",
+            "难度级别": "difficulty_level", "难度等级": "difficulty_level",
+            "难度": "difficulty_level",
             "解析": "explanation",
             "题型": "question_type",
             "选项": "options",
             "空数": "blank_count", "填空数": "blank_count",
             "得分点": "score_points",
+            "知识点层级标签": "knowledge_tiers",
             "标签": "tags",
             "编号": "id",
         }
@@ -1002,11 +1054,12 @@ class QuestionBankService:
             for row_data in reader:
                 stem = row_data.get("stem", "").strip()
                 answer = row_data.get("answer", "").strip()
-                topic_id = row_data.get("topic_id", "").strip()
-                if not stem or not answer or not topic_id:
+                knowledge_l1_id = row_data.get("knowledge_l1_id", "").strip()
+                knowledge_l2_id = row_data.get("knowledge_l2_id", "").strip()
+                if not stem or not answer or not knowledge_l2_id:
                     skipped += 1
                     continue
-                if not self.repository.has_topic(topic_id):
+                if not self._topic_exists(knowledge_l2_id):
                     skipped += 1
                     continue
                 external_id = row_data.get("id", f"csv_{uuid.uuid4().hex[:8]}").strip()
@@ -1016,12 +1069,19 @@ class QuestionBankService:
                 if existing:
                     skipped += 1
                     continue
-                difficulty = float(row_data.get("difficulty", 0.5))
+                try:
+                    difficulty_level = self._coerce_difficulty_level(row_data.get("difficulty_level"), None)
+                except ValueError:
+                    skipped += 1
+                    continue
                 explanation = row_data.get("explanation", "")
                 raw_question_type = row_data.get("question_type", "blank").strip()
                 question_type = self._resolve_question_type(raw_question_type, stem, answer, []).value
                 tags_str = row_data.get("tags", "")
                 tags = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+                tiers_raw = row_data.get("knowledge_tiers", "")
+                tier_parts = [t.strip() for t in re.split(r"[,，|、;/；]", tiers_raw) if t.strip()] if tiers_raw else []
+                knowledge_tiers = self._normalize_knowledge_tiers(tier_parts)
                 options = self._parse_csv_options(row_data.get("options", ""))
                 if question_type == QuestionType.choice.value and not options:
                     options = self._infer_options(QuestionType.choice, stem)
@@ -1029,13 +1089,22 @@ class QuestionBankService:
                 blank_count = self._parse_csv_blank_count(row_data.get("blank_count", ""), answer, score_points)
                 if question_type in {QuestionType.choice.value, QuestionType.judgment.value, QuestionType.solution.value}:
                     blank_count = 1
+                resolved_l1_id, resolved_l2_id = self._validate_knowledge_binding(
+                    session,
+                    knowledge_l1_id,
+                    knowledge_l2_id,
+                )
                 row = QuestionBankORM(
                     external_id=external_id,
-                    topic_id=topic_id,
+                    knowledge_l1_id=resolved_l1_id,
+                    knowledge_l2_id=resolved_l2_id,
+                    topic_id=resolved_l2_id,
                     stem=stem,
-                    difficulty=difficulty,
+                    difficulty_level=difficulty_level,
+                    difficulty=self._difficulty_level_to_float(difficulty_level),
                     answer=answer,
                     explanation=explanation,
+                    knowledge_tiers=knowledge_tiers,
                     question_type=question_type,
                     options=options,
                     blank_count=blank_count,
@@ -1048,6 +1117,64 @@ class QuestionBankService:
                 session.flush()
                 imported.append(self._view(row))
         return CsvImportResponse(imported_count=len(imported), skipped_count=skipped, questions=imported)
+
+    def _topic_exists(self, topic_id: str) -> bool:
+        if self.repository.has_topic(topic_id):
+            return True
+        with sql_repository.session() as session:
+            row = session.execute(
+                select(KnowledgeNodeORM.id).where(
+                    KnowledgeNodeORM.is_deleted == 0,
+                    KnowledgeNodeORM.level >= 2,
+                    (KnowledgeNodeORM.node_key == topic_id) | (KnowledgeNodeORM.topic_ref_id == topic_id),
+                )
+            ).scalars().first()
+            return bool(row)
+
+    def _safe_topic(self, topic_id: str) -> Topic:
+        try:
+            return self.repository.get_topic(topic_id)
+        except KeyError:
+            with sql_repository.session() as session:
+                node = session.execute(
+                    select(KnowledgeNodeORM).where(
+                        KnowledgeNodeORM.is_deleted == 0,
+                        (KnowledgeNodeORM.node_key == topic_id) | (KnowledgeNodeORM.topic_ref_id == topic_id),
+                    )
+                ).scalars().first()
+                if node:
+                    return Topic(
+                        id=topic_id,
+                        name=node.name,
+                        subject=node.subject or "",
+                        parent_id=node.parent_node_key,
+                        level=2 if node.level >= 2 else 1,
+                        grade_level=node.grade_level or "",
+                        term="全年",
+                        sort_order=node.sort_order,
+                        prerequisites=[],
+                        subtopics=[],
+                        difficulty=0.5,
+                        learning_objectives=[f"掌握{node.name}"],
+                        common_mistakes=[],
+                        tutoring_tips=[],
+                    )
+            return Topic(
+                id=topic_id,
+                name=topic_id,
+                subject="",
+                parent_id=None,
+                level=2,
+                grade_level="",
+                term="全年",
+                sort_order=0,
+                prerequisites=[],
+                subtopics=[],
+                difficulty=0.5,
+                learning_objectives=[f"掌握{topic_id}"],
+                common_mistakes=[],
+                tutoring_tips=[],
+            )
 
     def _parse_csv_options(self, raw: str) -> list[dict]:
         raw = (raw or "").strip()
@@ -1121,6 +1248,84 @@ class QuestionBankService:
             keywords = [item.strip() for item in re.split(r"[,，/、;；]", keyword_source) if item.strip()]
             points.append({"title": title or f"得分点 {index}", "points": point_value, "keywords": keywords})
         return points
+
+    def _coerce_difficulty_level(self, raw_level, raw_difficulty=None, fallback: int = 3) -> int:
+        if raw_level is None or str(raw_level).strip() == "":
+            if raw_difficulty is not None and str(raw_difficulty).strip() != "":
+                return self._difficulty_float_to_level(float(raw_difficulty))
+            return max(1, min(5, int(fallback)))
+        value = str(raw_level).strip()
+        try:
+            numeric = float(value)
+        except ValueError as exc:
+            raise ValueError("difficulty_level must be numeric") from exc
+        if 1 <= numeric <= 5 and float(int(numeric)) == numeric:
+            return int(numeric)
+        if 0.0 <= numeric <= 1.0:
+            return self._difficulty_float_to_level(numeric)
+        rounded = int(round(numeric))
+        if 1 <= rounded <= 5:
+            return rounded
+        raise ValueError("difficulty_level out of range")
+
+    def _difficulty_level_to_float(self, difficulty_level: int) -> float:
+        mapping = {1: 0.1, 2: 0.3, 3: 0.5, 4: 0.7, 5: 0.9}
+        return mapping.get(int(difficulty_level), 0.5)
+
+    def _difficulty_float_to_level(self, difficulty: float | None) -> int:
+        if difficulty is None:
+            return 3
+        value = float(difficulty)
+        if value < 0.2:
+            return 1
+        if value < 0.4:
+            return 2
+        if value < 0.6:
+            return 3
+        if value < 0.8:
+            return 4
+        return 5
+
+    def _normalize_knowledge_tiers(self, tiers) -> list[str]:
+        if isinstance(tiers, str):
+            candidates = [item.strip() for item in re.split(r"[,，|、;/；]", tiers) if item.strip()]
+        else:
+            candidates = [str(item).strip() for item in (tiers or []) if str(item).strip()]
+        normalized: list[str] = []
+        for tier in candidates:
+            if tier in self._knowledge_tier_set and tier not in normalized:
+                normalized.append(tier)
+        if not normalized:
+            return ["基础知识点"]
+        return normalized
+
+    def _validate_knowledge_binding(self, session, knowledge_l1_id: str, knowledge_l2_id: str) -> tuple[str, str]:
+        node_l2 = session.execute(
+            select(KnowledgeNodeORM).where(
+                KnowledgeNodeORM.is_deleted == 0,
+                KnowledgeNodeORM.level >= 2,
+                (KnowledgeNodeORM.node_key == knowledge_l2_id) | (KnowledgeNodeORM.topic_ref_id == knowledge_l2_id),
+            )
+        ).scalars().first()
+        if not node_l2:
+            raise ValueError("二级知识点不存在")
+        resolved_l2 = node_l2.node_key
+        expected_l1 = node_l2.parent_node_key or ""
+        resolved_l1 = (knowledge_l1_id or expected_l1).strip()
+        if not resolved_l1:
+            raise ValueError("二级知识点缺少一级父节点")
+        node_l1 = session.execute(
+            select(KnowledgeNodeORM).where(
+                KnowledgeNodeORM.is_deleted == 0,
+                KnowledgeNodeORM.level == 1,
+                KnowledgeNodeORM.node_key == resolved_l1,
+            )
+        ).scalars().first()
+        if not node_l1:
+            raise ValueError("一级知识点不存在")
+        if expected_l1 and node_l1.node_key != expected_l1:
+            raise ValueError("二级知识点不属于该一级知识点")
+        return node_l1.node_key, resolved_l2
 
     def _evaluate_with_llm(self, question: Question, student_answer: str) -> dict:
         if not self.llm_service:

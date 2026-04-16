@@ -14,9 +14,15 @@ from app.domain.models import RagDocument, TutorMode
 class LLMService:
     def __init__(self) -> None:
         load_environment()
-        self.api_key = os.getenv("OPENAI_API_KEY", "")
+        self.api_key = (
+            os.getenv("OPENAI_API_KEY")
+            or os.getenv("DEEPSEEK_API_KEY")
+            or os.getenv("DASHSCOPE_API_KEY")
+            or ""
+        )
         self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
         self.model = os.getenv("OPENAI_MODEL", "deepseek-chat")
+        self.timeout_seconds = float(os.getenv("OPENAI_TIMEOUT_SECONDS", "60"))
 
     def generate_tutor_reply(
         self,
@@ -115,7 +121,7 @@ class LLMService:
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=20,
+            timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()
@@ -196,7 +202,7 @@ class LLMService:
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=30,
+            timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()
@@ -320,7 +326,7 @@ class LLMService:
                 "Content-Type": "application/json",
             },
             json=payload,
-            timeout=20,
+            timeout=self.timeout_seconds,
         )
         response.raise_for_status()
         data = response.json()
