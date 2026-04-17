@@ -277,7 +277,10 @@ class KnowledgeDocumentORM(Base):
     __tablename__ = "knowledge_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     teacher_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    grade_level: Mapped[str] = mapped_column(String(80), default="", index=True)
+    subject: Mapped[str] = mapped_column(String(80), default="", index=True)
     title: Mapped[str] = mapped_column(String(255))
     topic_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     doc_type: Mapped[str] = mapped_column(String(80))
@@ -291,7 +294,10 @@ class KnowledgeChunkORM(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     document_id: Mapped[int] = mapped_column(ForeignKey("knowledge_documents.id"), index=True)
+    school_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     teacher_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    grade_level: Mapped[str] = mapped_column(String(80), default="", index=True)
+    subject: Mapped[str] = mapped_column(String(80), default="", index=True)
     topic_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     doc_type: Mapped[str] = mapped_column(String(80))
     source_name: Mapped[str] = mapped_column(String(255))
@@ -332,8 +338,14 @@ def _migrate_sqlite_schema() -> None:
 
     if "knowledge_chunks" in existing_tables:
         chunk_columns = {column["name"] for column in inspector.get_columns("knowledge_chunks")}
+        if "school_id" not in chunk_columns:
+            migration_sql.append("ALTER TABLE knowledge_chunks ADD COLUMN school_id INTEGER")
         if "teacher_user_id" not in chunk_columns:
             migration_sql.append("ALTER TABLE knowledge_chunks ADD COLUMN teacher_user_id INTEGER")
+        if "grade_level" not in chunk_columns:
+            migration_sql.append("ALTER TABLE knowledge_chunks ADD COLUMN grade_level VARCHAR(80) DEFAULT ''")
+        if "subject" not in chunk_columns:
+            migration_sql.append("ALTER TABLE knowledge_chunks ADD COLUMN subject VARCHAR(80) DEFAULT ''")
         if "embedding" not in chunk_columns:
             migration_sql.append("ALTER TABLE knowledge_chunks ADD COLUMN embedding JSON")
         if "embedding_model" not in chunk_columns:
@@ -343,8 +355,14 @@ def _migrate_sqlite_schema() -> None:
 
     if "knowledge_documents" in existing_tables:
         document_columns = {column["name"] for column in inspector.get_columns("knowledge_documents")}
+        if "school_id" not in document_columns:
+            migration_sql.append("ALTER TABLE knowledge_documents ADD COLUMN school_id INTEGER")
         if "teacher_user_id" not in document_columns:
             migration_sql.append("ALTER TABLE knowledge_documents ADD COLUMN teacher_user_id INTEGER")
+        if "grade_level" not in document_columns:
+            migration_sql.append("ALTER TABLE knowledge_documents ADD COLUMN grade_level VARCHAR(80) DEFAULT ''")
+        if "subject" not in document_columns:
+            migration_sql.append("ALTER TABLE knowledge_documents ADD COLUMN subject VARCHAR(80) DEFAULT ''")
 
     if "users" in existing_tables:
         user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -512,4 +530,54 @@ def _migrate_sqlite_schema() -> None:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_textbooks_school_grade_subject_nonempty "
                 "ON textbooks(school_id, grade_level, subject) "
                 "WHERE grade_level != '' AND subject != ''"
+            )
+        if "knowledge_documents" in existing_tables:
+            connection.exec_driver_sql("UPDATE knowledge_documents SET grade_level = '' WHERE grade_level IS NULL")
+            connection.exec_driver_sql("UPDATE knowledge_documents SET subject = '' WHERE subject IS NULL")
+            connection.exec_driver_sql(
+                "UPDATE knowledge_documents SET school_id = ("
+                "SELECT users.school_id FROM users WHERE users.id = knowledge_documents.teacher_user_id"
+                ") WHERE school_id IS NULL AND teacher_user_id IS NOT NULL"
+            )
+            connection.exec_driver_sql(
+                "UPDATE knowledge_documents SET grade_level = COALESCE(("
+                "SELECT kn.grade_level FROM knowledge_nodes kn "
+                "WHERE kn.is_deleted = 0 AND (kn.node_key = knowledge_documents.topic_id OR kn.topic_ref_id = knowledge_documents.topic_id) "
+                "LIMIT 1"
+                "), grade_level) "
+                "WHERE (grade_level IS NULL OR grade_level = '') AND topic_id IS NOT NULL"
+            )
+            connection.exec_driver_sql(
+                "UPDATE knowledge_documents SET subject = COALESCE(("
+                "SELECT kn.subject FROM knowledge_nodes kn "
+                "WHERE kn.is_deleted = 0 AND (kn.node_key = knowledge_documents.topic_id OR kn.topic_ref_id = knowledge_documents.topic_id) "
+                "LIMIT 1"
+                "), subject) "
+                "WHERE (subject IS NULL OR subject = '') AND topic_id IS NOT NULL"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_scope "
+                "ON knowledge_documents(school_id, grade_level, subject)"
+            )
+        if "knowledge_chunks" in existing_tables:
+            connection.exec_driver_sql("UPDATE knowledge_chunks SET grade_level = '' WHERE grade_level IS NULL")
+            connection.exec_driver_sql("UPDATE knowledge_chunks SET subject = '' WHERE subject IS NULL")
+            connection.exec_driver_sql(
+                "UPDATE knowledge_chunks SET school_id = COALESCE(("
+                "SELECT kd.school_id FROM knowledge_documents kd WHERE kd.id = knowledge_chunks.document_id"
+                "), school_id)"
+            )
+            connection.exec_driver_sql(
+                "UPDATE knowledge_chunks SET grade_level = COALESCE(("
+                "SELECT kd.grade_level FROM knowledge_documents kd WHERE kd.id = knowledge_chunks.document_id"
+                "), grade_level)"
+            )
+            connection.exec_driver_sql(
+                "UPDATE knowledge_chunks SET subject = COALESCE(("
+                "SELECT kd.subject FROM knowledge_documents kd WHERE kd.id = knowledge_chunks.document_id"
+                "), subject)"
+            )
+            connection.exec_driver_sql(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_scope "
+                "ON knowledge_chunks(school_id, grade_level, subject)"
             )

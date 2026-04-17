@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, File, Form, Header, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 from sqlalchemy import text
+from urllib.parse import quote
 
 from app.core.container import container
 from app.core.database import engine
@@ -24,9 +25,6 @@ from app.domain.models import (
     DiagnosisResponse,
     DiagnosisRunRequest,
     HealthResponse,
-    KnowledgeDirectoryImportRequest,
-    KnowledgeDirectoryImportResponse,
-    KnowledgeDocumentImportRequest,
     KnowledgeDocumentView,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
@@ -62,12 +60,6 @@ from app.domain.models import (
     ReportRunRequest,
     SchoolCreate,
     SchoolView,
-    RetrievalEvaluationRequest,
-    RetrievalEvaluationResponse,
-    RetrievalCaseCreate,
-    RetrievalCaseRunResponse,
-    RetrievalCaseView,
-    RetrievalQualityDashboard,
     StudentDashboard,
     StudentProfileCreate,
     StudentProfileDetail,
@@ -130,8 +122,7 @@ def _topics_for_context(user: UserSummary | None = None, textbook_id: int | None
         try:
             resolved_textbook_id = textbook_id
             if resolved_textbook_id is None:
-                resolved_textbook_id = container.knowledge_config_service.resolve_user_textbook_id(user.id, user.school_id)
-            return container.knowledge_config_service.list_topics_for_school(user.school_id, resolved_textbook_id)
+                return container.knowledge_config_service.list_topics_for_school(user.school_id, None)
         except Exception:
             pass
     return container.repository.list_topics()
@@ -804,29 +795,38 @@ def review_questions(
     return container.question_bank_service.review_questions(request)
 
 
-@router.post("/teacher/question-bank/import-csv", response_model=CsvImportResponse)
-def import_csv_questions(
-    csv_content: str = Body(..., media_type="text/plain"),
+@router.get("/teacher/question-bank/excel-template", response_class=Response)
+def download_excel_template(
+    grade_level: str,
+    subject: str,
     x_session_token: str | None = Header(default=None),
-) -> CsvImportResponse:
-    current_teacher(x_session_token)
+) -> Response:
+    user = current_teacher(x_session_token)
     try:
-        return container.question_bank_service.import_csv(csv_content)
+        filename, content = container.question_bank_service.build_excel_template(user.id, grade_level, subject)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename=question_template.xlsx; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
-@router.get("/teacher/question-bank/csv-template", response_class=PlainTextResponse)
-def download_csv_template(x_session_token: str | None = Header(default=None)) -> PlainTextResponse:
-    current_teacher(x_session_token)
-    template = "\ufeff题目,答案,一级知识点ID,二级知识点ID,难度级别,知识点层级标签,解析,题型,选项,空数,得分点,标签\n"
-    template += "解方程 3x=12,x=4,tb5_l1_数与代数,tb5_l2_方程与不等式,2,基础知识点,两边除以3,blank,,1,,方程\n"
-    template += "一次函数 y=2x+1 的斜率是多少？,2,tb5_l1_数与代数,tb5_l2_函数初步,3,核心知识点,与y=kx+b对照k=2,blank,,1,斜率:1:2,斜率\n"
-    template += "一次函数 y=2x+3 的图像与 y 轴交点是多少？,3,tb5_l1_数与代数,tb5_l2_函数初步,3,核心知识点,截距由 b 决定,choice,A:1|B:2|C:3|D:5,1,,选择题\n"
-    template += "判断：一次函数 y=kx+b 中 k 表示斜率。,正确,tb5_l1_数与代数,tb5_l2_函数初步,2,基础知识点,k 决定图像倾斜程度,judgment,,1,,判断题\n"
-    return PlainTextResponse(content=template, media_type="text/csv", headers={
-        "Content-Disposition": "attachment; filename=question_template.csv"
-    })
+@router.post("/teacher/question-bank/import-excel", response_model=CsvImportResponse)
+async def import_excel_questions(
+    file: UploadFile = File(...),
+    grade_level: str = Form(...),
+    subject: str = Form(...),
+    x_session_token: str | None = Header(default=None),
+) -> CsvImportResponse:
+    user = current_teacher(x_session_token)
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="仅支持 .xlsx Excel 文件")
+    try:
+        return container.question_bank_service.import_excel(await file.read(), user.id, grade_level, subject)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/teacher/analytics/practice", response_model=PracticeAnalyticsSummary)
@@ -859,29 +859,17 @@ def resolve_practice_review(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
-@router.post("/teacher/documents/import", response_model=list[KnowledgeDocumentView])
-def import_documents(
-    request: KnowledgeDocumentImportRequest,
-    x_session_token: str | None = Header(default=None),
-) -> list[KnowledgeDocumentView]:
-    user = current_teacher(x_session_token)
-    for document in request.documents:
-        require_optional_topic(document.topic_id, user=user)
-    return container.document_service.import_documents(request, user.id)
-
-
 @router.post("/teacher/documents/upload", response_model=KnowledgeDocumentView)
 async def upload_document(
     file: UploadFile = File(...),
-    topic_id: str | None = Form(default=None),
+    grade_level: str = Form(...),
+    subject: str = Form(...),
     doc_type: str = Form(default="reference"),
     title: str | None = Form(default=None),
     source_name: str | None = Form(default=None),
     x_session_token: str | None = Header(default=None),
 ) -> KnowledgeDocumentView:
     user = current_teacher(x_session_token)
-    topic_id = topic_id or None
-    require_optional_topic(topic_id, user=user)
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=400, detail="uploaded file is larger than 10MB")
@@ -890,7 +878,8 @@ async def upload_document(
             filename=file.filename or "uploaded.txt",
             content=content,
             title=title,
-            topic_id=topic_id,
+            grade_level=grade_level,
+            subject=subject,
             doc_type=doc_type or "reference",
             source_name=source_name,
             user_id=user.id,
@@ -899,23 +888,17 @@ async def upload_document(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/teacher/documents/import-directory", response_model=KnowledgeDirectoryImportResponse)
-def import_documents_from_directory(
-    request: KnowledgeDirectoryImportRequest,
+@router.get("/teacher/documents", response_model=list[KnowledgeDocumentView])
+def list_documents(
+    grade_level: str | None = None,
+    subject: str | None = None,
     x_session_token: str | None = Header(default=None),
-) -> KnowledgeDirectoryImportResponse:
+) -> list[KnowledgeDocumentView]:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id, user=user)
     try:
-        return container.document_service.import_directory(request, user.id)
+        return container.document_service.list_documents(user.id, grade_level=grade_level, subject=subject)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-
-@router.get("/teacher/documents", response_model=list[KnowledgeDocumentView])
-def list_documents(x_session_token: str | None = Header(default=None)) -> list[KnowledgeDocumentView]:
-    user = current_teacher(x_session_token)
-    return container.document_service.list_documents(user.id)
 
 
 @router.delete("/teacher/documents/{document_id}", response_model=dict[str, str])
@@ -940,59 +923,10 @@ def search_documents(
     x_session_token: str | None = Header(default=None),
 ) -> list[KnowledgeSearchHit]:
     user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id, user=user)
-    return container.document_service.search(request, user.id)
-
-
-@router.post("/teacher/documents/evaluate", response_model=RetrievalEvaluationResponse)
-def evaluate_documents(
-    request: RetrievalEvaluationRequest,
-    x_session_token: str | None = Header(default=None),
-) -> RetrievalEvaluationResponse:
-    user = current_teacher(x_session_token)
-    require_optional_topic(request.topic_id, user=user)
-    require_optional_topic(request.expected_topic_id, "expected_topic_id", user=user)
-    return container.document_service.evaluate_retrieval(request, user.id)
-
-
-@router.get("/teacher/retrieval-quality", response_model=RetrievalQualityDashboard)
-def retrieval_quality_dashboard(
-    x_session_token: str | None = Header(default=None),
-) -> RetrievalQualityDashboard:
-    user = current_teacher(x_session_token)
-    return container.document_service.retrieval_quality_dashboard(user.id)
-
-
-@router.get("/teacher/retrieval-cases", response_model=list[RetrievalCaseView])
-def list_retrieval_cases(x_session_token: str | None = Header(default=None)) -> list[RetrievalCaseView]:
-    user = current_teacher(x_session_token)
-    return container.document_service.list_retrieval_cases(user.id)
-
-
-@router.post("/teacher/retrieval-cases", response_model=RetrievalCaseView)
-def create_retrieval_case(
-    request: RetrievalCaseCreate,
-    x_session_token: str | None = Header(default=None),
-) -> RetrievalCaseView:
-    user = current_teacher(x_session_token)
-    require_optional_topic(request.expected_topic_id, "expected_topic_id", user=user)
-    return container.document_service.create_retrieval_case(user.id, request)
-
-
-@router.delete("/teacher/retrieval-cases/{case_id}", response_model=dict[str, str])
-def delete_retrieval_case(case_id: int, x_session_token: str | None = Header(default=None)) -> dict[str, str]:
-    user = current_teacher(x_session_token)
     try:
-        container.document_service.delete_retrieval_case(user.id, case_id)
+        return container.document_service.search(request, user.id)
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    return {"status": "ok"}
-
-
-@router.post("/teacher/retrieval-cases/run", response_model=RetrievalCaseRunResponse)
-def run_retrieval_cases(x_session_token: str | None = Header(default=None)) -> RetrievalCaseRunResponse:
-    user = current_teacher(x_session_token)
-    return container.document_service.run_retrieval_cases(user.id)
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.get("/graph/topics", response_model=list[Topic])

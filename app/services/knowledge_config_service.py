@@ -110,28 +110,53 @@ class KnowledgeConfigService:
             return fallback.id
 
     def list_topics_for_school(self, school_id: int, textbook_id: int | None = None) -> list[Topic]:
-        textbook_id = textbook_id or self.get_default_textbook_id(school_id)
-        textbook = self._get_textbook_or_raise(school_id, textbook_id)
-        nodes = self._list_nodes(school_id, textbook_id)
+        self.ensure_seeded(school_id)
+        nodes = []
+        with sql_repository.session() as session:
+            stmt = select(KnowledgeNodeORM).where(
+                KnowledgeNodeORM.school_id == school_id,
+                KnowledgeNodeORM.is_deleted == 0,
+            )
+            if textbook_id:
+                stmt = stmt.where(KnowledgeNodeORM.textbook_id == textbook_id)
+            nodes = session.execute(stmt.order_by(KnowledgeNodeORM.level.asc(), KnowledgeNodeORM.sort_order.asc(), KnowledgeNodeORM.node_key.asc())).scalars().all()
+
         if not nodes:
+            textbook_id = textbook_id or self.get_default_textbook_id(school_id)
             self.seed_textbook_nodes(school_id, textbook_id)
-            nodes = self._list_nodes(school_id, textbook_id)
+            with sql_repository.session() as session:
+                stmt = select(KnowledgeNodeORM).where(
+                    KnowledgeNodeORM.school_id == school_id,
+                    KnowledgeNodeORM.is_deleted == 0,
+                )
+                if textbook_id:
+                    stmt = stmt.where(KnowledgeNodeORM.textbook_id == textbook_id)
+                nodes = session.execute(stmt.order_by(KnowledgeNodeORM.level.asc(), KnowledgeNodeORM.sort_order.asc(), KnowledgeNodeORM.node_key.asc())).scalars().all()
+
         if not nodes:
             return []
 
         topics: list[Topic] = []
         ordered = sorted(nodes, key=lambda item: (item.level, item.sort_order, item.node_key))
+
+        textbooks_map = {}
+        with sql_repository.session() as session:
+            textbook_rows = session.execute(select(TextbookORM)).scalars().all()
+            for tb in textbook_rows:
+                textbooks_map[tb.id] = tb
+
         for node in ordered:
             level = 1 if node.level <= 1 else 2
             topic_id = node.node_key
+            textbook = textbooks_map.get(node.textbook_id)
             topics.append(
                 Topic(
                     id=topic_id,
                     name=node.name,
-                    subject=node.subject or textbook.subject,
+                    subject=node.subject or (textbook.subject if textbook else ""),
                     parent_id=node.parent_node_key if level == 2 else None,
                     level=level,
-                    grade_level=node.grade_level or textbook.grade_level,
+                    grade_level=node.grade_level or (textbook.grade_level if textbook else ""),
                     term="全年",
                     sort_order=node.sort_order,
                     prerequisites=[],

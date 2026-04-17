@@ -8,11 +8,20 @@ import json
 import re
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
-from app.core.database import KnowledgeNodeORM, PracticeRecordORM, QuestionBankORM, StudentMasteryORM, StudentProfileORM
+from app.core.database import (
+    ClassroomORM,
+    KnowledgeNodeORM,
+    PracticeRecordORM,
+    QuestionBankORM,
+    StudentMasteryORM,
+    StudentProfileORM,
+    UserORM,
+)
 from app.domain.models import (
     CsvImportResponse,
+    ImportFailureItem,
     KNOWLEDGE_TIERS,
     PracticeCoachCard,
     PracticeCoachRequest,
@@ -47,6 +56,18 @@ class QuestionBankService:
         self.repository = repository
         self.llm_service = llm_service
         self._knowledge_tier_set = set(KNOWLEDGE_TIERS)
+        self._excel_template_headers = [
+            "题目",
+            "答案",
+            "二级知识点",
+            "题型",
+            "解析",
+            "难度级别",
+            "选项",
+            "空数",
+            "得分点",
+            "标签",
+        ]
 
     def import_questions(self, request: QuestionBankImportRequest) -> list[QuestionBankItemView]:
         imported = []
@@ -82,13 +103,13 @@ class QuestionBankService:
                 row.score_points = [self._dump_model(point) for point in item.score_points]
                 row.tags = item.tags
                 session.flush()
-                imported.append(self._view(row))
+                imported.append(self._view(session, row))
         return imported
 
     def list_questions(self) -> list[QuestionBankItemView]:
         with sql_repository.session() as session:
             rows = session.execute(select(QuestionBankORM).order_by(QuestionBankORM.created_at.desc())).scalars().all()
-            return [self._view(row) for row in rows]
+            return self._views(session, rows)
 
     def list_questions_by_topic(self, topic_id: str) -> list[Question]:
         with sql_repository.session() as session:
@@ -829,36 +850,9 @@ class QuestionBankService:
         )
 
     def _resolve_question_type(self, raw_type: str | None, stem: str, answer: str, score_points: list) -> QuestionType:
-        if raw_type:
-            normalized = raw_type.strip().lower()
-            type_aliases = {
-                "选择": QuestionType.choice,
-                "选择题": QuestionType.choice,
-                "single_choice": QuestionType.choice,
-                "multiple_choice": QuestionType.choice,
-                "判断": QuestionType.judgment,
-                "判断题": QuestionType.judgment,
-                "true_false": QuestionType.judgment,
-                "tf": QuestionType.judgment,
-                "填空": QuestionType.blank,
-                "填空题": QuestionType.blank,
-                "blank_question": QuestionType.blank,
-                "简答": QuestionType.solution,
-                "简答题": QuestionType.solution,
-                "解答": QuestionType.solution,
-                "解答题": QuestionType.solution,
-                "solution_question": QuestionType.solution,
-                "分步": QuestionType.steps,
-                "分步题": QuestionType.steps,
-                "分步计算题": QuestionType.steps,
-                "step": QuestionType.steps,
-            }
-            if normalized in type_aliases:
-                return type_aliases[normalized]
-            try:
-                return QuestionType(normalized)
-            except ValueError:
-                pass
+        normalized_type = self._normalize_question_type_alias(raw_type)
+        if normalized_type is not None:
+            return normalized_type
         if score_points:
             return QuestionType.steps
         if self._normalize_judgment_answer(answer) is not None or re.search(r"判断|正确|错误|对错|是否", stem):
@@ -870,6 +864,50 @@ class QuestionBankService:
         if self._is_multi_part(answer):
             return QuestionType.blank
         return QuestionType.blank
+
+    def _normalize_question_type_alias(self, raw_type: str | None) -> QuestionType | None:
+        if not raw_type:
+            return None
+        normalized = raw_type.strip().lower()
+        if not normalized:
+            return None
+        type_aliases = {
+            "选择": QuestionType.choice,
+            "选择题": QuestionType.choice,
+            "单选": QuestionType.choice,
+            "单选题": QuestionType.choice,
+            "多选": QuestionType.choice,
+            "多选题": QuestionType.choice,
+            "single_choice": QuestionType.choice,
+            "multiple_choice": QuestionType.choice,
+            "choice": QuestionType.choice,
+            "判断": QuestionType.judgment,
+            "判断题": QuestionType.judgment,
+            "true_false": QuestionType.judgment,
+            "tf": QuestionType.judgment,
+            "judgment": QuestionType.judgment,
+            "填空": QuestionType.blank,
+            "填空题": QuestionType.blank,
+            "blank_question": QuestionType.blank,
+            "blank": QuestionType.blank,
+            "简答": QuestionType.solution,
+            "简答题": QuestionType.solution,
+            "解答": QuestionType.solution,
+            "解答题": QuestionType.solution,
+            "solution_question": QuestionType.solution,
+            "solution": QuestionType.solution,
+            "分步": QuestionType.steps,
+            "分步题": QuestionType.steps,
+            "分步计算题": QuestionType.steps,
+            "step": QuestionType.steps,
+            "steps": QuestionType.steps,
+        }
+        if normalized in type_aliases:
+            return type_aliases[normalized]
+        try:
+            return QuestionType(normalized)
+        except ValueError:
+            return None
 
     def _infer_options(self, question_type: QuestionType, stem: str) -> list[dict]:
         if question_type != QuestionType.choice:
@@ -901,6 +939,39 @@ class QuestionBankService:
             return item.model_dump()
         return item.dict()
 
+    def _views(self, session, rows: list[QuestionBankORM]) -> list[QuestionBankItemView]:
+        meta_map = self._build_question_meta_map(session, rows)
+        return [self._view(session, row, meta_map=meta_map) for row in rows]
+
+    def _build_question_meta_map(self, session, rows: list[QuestionBankORM]) -> dict[str, dict]:
+        keys = {
+            key.strip()
+            for row in rows
+            for key in [row.knowledge_l1_id or "", row.knowledge_l2_id or row.topic_id or "", row.topic_id or ""]
+            if key and key.strip()
+        }
+        if not keys:
+            return {}
+        nodes = session.execute(
+            select(KnowledgeNodeORM).where(
+                KnowledgeNodeORM.is_deleted == 0,
+                or_(KnowledgeNodeORM.node_key.in_(keys), KnowledgeNodeORM.topic_ref_id.in_(keys)),
+            )
+        ).scalars().all()
+        meta_map: dict[str, dict] = {}
+        for node in nodes:
+            meta = {
+                "name": node.name,
+                "subject": node.subject or "",
+                "grade_level": node.grade_level or "",
+                "parent_id": node.parent_node_key or "",
+                "level": node.level,
+            }
+            meta_map[node.node_key] = meta
+            if node.topic_ref_id:
+                meta_map[node.topic_ref_id] = meta
+        return meta_map
+
     def _normalize_text(self, text: str) -> str:
         normalized = text.strip().lower()
         normalized = normalized.replace(" ", "").replace("，", ",").replace("。", "")
@@ -914,14 +985,42 @@ class QuestionBankService:
         flags = ["说明", "证明", "分析", "解答", "为什么", "理由"]
         return any(flag in stem for flag in flags) or len(answer) >= 20
 
-    def _view(self, row: QuestionBankORM) -> QuestionBankItemView:
+    def _view(self, session, row: QuestionBankORM, meta_map: dict[str, dict] | None = None) -> QuestionBankItemView:
         question = self._question_from_row(row)
+        meta_map = meta_map or self._build_question_meta_map(session, [row])
+        resolved_l2_id = question.knowledge_l2_id or question.topic_id
+        l2_meta = meta_map.get(resolved_l2_id, {})
+        resolved_l1_id = (question.knowledge_l1_id or l2_meta.get("parent_id") or "").strip()
+        l1_meta = meta_map.get(resolved_l1_id, {}) if resolved_l1_id else {}
+
+        knowledge_l2_name = l2_meta.get("name") or ""
+        subject = l2_meta.get("subject") or l1_meta.get("subject") or ""
+        grade_level = l2_meta.get("grade_level") or l1_meta.get("grade_level") or ""
+        if not knowledge_l2_name and resolved_l2_id:
+            topic = self._safe_topic(resolved_l2_id)
+            knowledge_l2_name = topic.name
+            subject = subject or topic.subject
+            grade_level = grade_level or topic.grade_level
+            resolved_l1_id = resolved_l1_id or (topic.parent_id or "")
+
+        knowledge_l1_name = l1_meta.get("name") or ""
+        if not knowledge_l1_name and resolved_l1_id:
+            parent_topic = self._safe_topic(resolved_l1_id)
+            knowledge_l1_name = parent_topic.name
+            subject = subject or parent_topic.subject
+            grade_level = grade_level or parent_topic.grade_level
+
         return QuestionBankItemView(
             id=row.id,
             external_id=row.external_id,
-            knowledge_l1_id=question.knowledge_l1_id,
-            knowledge_l2_id=question.knowledge_l2_id,
-            topic_id=question.topic_id,
+            knowledge_l1_id=resolved_l1_id,
+            knowledge_l1_name=knowledge_l1_name,
+            knowledge_l2_id=resolved_l2_id,
+            knowledge_l2_name=knowledge_l2_name or resolved_l2_id,
+            topic_id=resolved_l2_id,
+            topic_name=knowledge_l2_name or resolved_l2_id,
+            subject=subject,
+            grade_level=grade_level,
             stem=row.stem,
             difficulty_level=question.difficulty_level,
             difficulty=question.difficulty,
@@ -985,7 +1084,7 @@ class QuestionBankService:
                     difficulty_level=generated_level,
                     difficulty=self._difficulty_level_to_float(generated_level),
                     answer=item.get("answer", ""),
-                    explanation=item.get("explanation", ""),
+                    explanation=item.get("explanation", "") if request.include_explanation else "",
                     knowledge_tiers=self._normalize_knowledge_tiers(item.get("knowledge_tiers")),
                     question_type=request.question_type.value,
                     options=options,
@@ -997,7 +1096,7 @@ class QuestionBankService:
                 )
                 session.add(row)
                 session.flush()
-                saved.append(self._view(row))
+                saved.append(self._view(session, row))
 
         return QuestionGenerateResponse(generated_count=len(saved), questions=saved)
 
@@ -1012,7 +1111,7 @@ class QuestionBankService:
                 if row and row.status == "pending":
                     row.status = new_status
                     session.flush()
-                    reviewed.append(self._view(row))
+                    reviewed.append(self._view(session, row))
         return QuestionReviewResponse(reviewed_count=len(reviewed), questions=reviewed)
 
     def list_pending_questions(self) -> list[QuestionBankItemView]:
@@ -1020,15 +1119,18 @@ class QuestionBankService:
             rows = session.execute(
                 select(QuestionBankORM).where(QuestionBankORM.status == "pending").order_by(QuestionBankORM.created_at.desc())
             ).scalars().all()
-            return [self._view(row) for row in rows]
+            return self._views(session, rows)
 
-    def import_csv(self, csv_content: str) -> CsvImportResponse:
+    def import_csv(self, csv_content: str, teacher_user_id: int | None = None) -> CsvImportResponse:
         cn_to_en = {
             "题目": "stem", "题干": "stem",
             "答案": "answer",
             "一级知识点ID": "knowledge_l1_id", "一级知识点": "knowledge_l1_id",
+            "一级知识点名称": "knowledge_l1_name",
             "二级知识点ID": "knowledge_l2_id", "二级知识点": "knowledge_l2_id",
+            "二级知识点名称": "knowledge_l2_name",
             "知识点ID": "knowledge_l2_id", "知识点": "knowledge_l2_id",
+            "知识点名称": "knowledge_l2_name",
             "难度级别": "difficulty_level", "难度等级": "difficulty_level",
             "难度": "difficulty_level",
             "解析": "explanation",
@@ -1039,6 +1141,8 @@ class QuestionBankService:
             "知识点层级标签": "knowledge_tiers",
             "标签": "tags",
             "编号": "id",
+            "knowledge_l1_name": "knowledge_l1_name",
+            "knowledge_l2_name": "knowledge_l2_name",
         }
         reader = csv.DictReader(io.StringIO(csv_content))
         if reader.fieldnames:
@@ -1051,15 +1155,15 @@ class QuestionBankService:
         imported = []
         skipped = 0
         with sql_repository.session() as session:
+            csv_context = self._build_csv_topic_context(session, teacher_user_id)
             for row_data in reader:
                 stem = row_data.get("stem", "").strip()
                 answer = row_data.get("answer", "").strip()
                 knowledge_l1_id = row_data.get("knowledge_l1_id", "").strip()
+                knowledge_l1_name = row_data.get("knowledge_l1_name", "").strip()
                 knowledge_l2_id = row_data.get("knowledge_l2_id", "").strip()
-                if not stem or not answer or not knowledge_l2_id:
-                    skipped += 1
-                    continue
-                if not self._topic_exists(knowledge_l2_id):
+                knowledge_l2_name = row_data.get("knowledge_l2_name", "").strip()
+                if not stem or not answer or (not knowledge_l2_id and not knowledge_l2_name):
                     skipped += 1
                     continue
                 external_id = row_data.get("id", f"csv_{uuid.uuid4().hex[:8]}").strip()
@@ -1083,17 +1187,26 @@ class QuestionBankService:
                 tier_parts = [t.strip() for t in re.split(r"[,，|、;/；]", tiers_raw) if t.strip()] if tiers_raw else []
                 knowledge_tiers = self._normalize_knowledge_tiers(tier_parts)
                 options = self._parse_csv_options(row_data.get("options", ""))
+                if options:
+                    question_type = QuestionType.choice.value
                 if question_type == QuestionType.choice.value and not options:
                     options = self._infer_options(QuestionType.choice, stem)
                 score_points = self._parse_csv_score_points(row_data.get("score_points", ""))
                 blank_count = self._parse_csv_blank_count(row_data.get("blank_count", ""), answer, score_points)
                 if question_type in {QuestionType.choice.value, QuestionType.judgment.value, QuestionType.solution.value}:
                     blank_count = 1
-                resolved_l1_id, resolved_l2_id = self._validate_knowledge_binding(
-                    session,
-                    knowledge_l1_id,
-                    knowledge_l2_id,
-                )
+                try:
+                    resolved_l1_id, resolved_l2_id = self._resolve_csv_knowledge_binding(
+                        session,
+                        knowledge_l1_id=knowledge_l1_id,
+                        knowledge_l1_name=knowledge_l1_name,
+                        knowledge_l2_id=knowledge_l2_id,
+                        knowledge_l2_name=knowledge_l2_name,
+                        context=csv_context,
+                    )
+                except ValueError:
+                    skipped += 1
+                    continue
                 row = QuestionBankORM(
                     external_id=external_id,
                     knowledge_l1_id=resolved_l1_id,
@@ -1115,8 +1228,376 @@ class QuestionBankService:
                 )
                 session.add(row)
                 session.flush()
-                imported.append(self._view(row))
+                imported.append(self._view(session, row))
         return CsvImportResponse(imported_count=len(imported), skipped_count=skipped, questions=imported)
+
+    def build_excel_template(
+        self,
+        teacher_user_id: int,
+        grade_level: str,
+        subject: str,
+        row_count: int = 12,
+    ) -> tuple[str, bytes]:
+        normalized_grade = (grade_level or "").strip()
+        normalized_subject = (subject or "").strip()
+        if not normalized_grade or not normalized_subject:
+            raise ValueError("年级和学科不能为空")
+
+        with sql_repository.session() as session:
+            context = self._build_topic_context(
+                session,
+                teacher_user_id=teacher_user_id,
+                grade_level=normalized_grade,
+                subject=normalized_subject,
+                strict_grade_scope=True,
+            )
+            topic_names = [item["knowledge_l2_name"] for item in context["topics"]]
+            if not topic_names:
+                raise ValueError("当前年级学科下暂无可用二级知识点")
+        from openpyxl import Workbook
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "题目录入"
+        meta = workbook.create_sheet("_meta")
+        meta["A1"] = "ZHUYU_EDU_QUESTION_IMPORT_TEMPLATE"
+        meta["A2"] = normalized_grade
+        meta["A3"] = normalized_subject
+        meta["A4"] = "一级知识点固定为当前学科，二级知识点请从下拉中选择"
+        meta.sheet_state = "hidden"
+
+        for index, header in enumerate(self._excel_template_headers, start=1):
+            sheet.cell(row=1, column=index, value=header)
+            sheet.column_dimensions[self._excel_column_name(index)].width = 18 if index != 1 else 36
+        sheet.freeze_panes = "A2"
+
+        for row_index, name in enumerate(topic_names, start=1):
+            meta.cell(row=row_index, column=2, value=name)
+
+        options_range = f"'_meta'!$B$1:$B${max(len(topic_names), 1)}"
+        validation = DataValidation(type="list", formula1=options_range, allow_blank=False)
+        validation.prompt = "请选择当前年级学科下的二级知识点"
+        validation.error = "请从下拉选项中选择二级知识点"
+        sheet.add_data_validation(validation)
+        validation.add(f"C2:C{row_count + 1}")
+
+        for row_index in range(2, row_count + 2):
+            sheet.cell(row=row_index, column=4, value="")
+            sheet.cell(row=row_index, column=6, value=3)
+            sheet.cell(row=row_index, column=8, value=1)
+
+        buffer = io.BytesIO()
+        workbook.save(buffer)
+        filename = f"题目导入模板_{normalized_grade}_{normalized_subject}.xlsx"
+        return filename, buffer.getvalue()
+
+    def import_excel(
+        self,
+        content: bytes,
+        teacher_user_id: int,
+        grade_level: str,
+        subject: str,
+    ) -> CsvImportResponse:
+        normalized_grade = (grade_level or "").strip()
+        normalized_subject = (subject or "").strip()
+        if not normalized_grade or not normalized_subject:
+            raise ValueError("年级和学科不能为空")
+
+        from openpyxl import load_workbook
+
+        try:
+            workbook = load_workbook(io.BytesIO(content))
+        except Exception as exc:
+            raise ValueError("Excel 文件无法解析，请使用系统模板") from exc
+
+        self._validate_excel_template(workbook, normalized_grade, normalized_subject)
+        if "题目录入" not in workbook.sheetnames:
+            raise ValueError("Excel 模板中缺少题目录入工作表")
+        sheet = workbook["题目录入"]
+        headers = [self._excel_cell_text(sheet.cell(row=1, column=index).value) for index in range(1, len(self._excel_template_headers) + 1)]
+        if headers != self._excel_template_headers:
+            raise ValueError("Excel 模板表头不匹配，请重新下载模板")
+
+        imported = []
+        skipped = 0
+        failed_rows: list[ImportFailureItem] = []
+        with sql_repository.session() as session:
+            context = self._build_topic_context(
+                session,
+                teacher_user_id=teacher_user_id,
+                grade_level=normalized_grade,
+                subject=normalized_subject,
+                strict_grade_scope=True,
+            )
+            if not context["topics"]:
+                raise ValueError("当前年级学科下暂无可用二级知识点")
+
+            for row_index in range(2, sheet.max_row + 1):
+                values = [
+                    self._excel_cell_text(sheet.cell(row=row_index, column=column_index).value)
+                    for column_index in range(1, len(self._excel_template_headers) + 1)
+                ]
+                stem, answer, knowledge_l2_name, raw_question_type, explanation, raw_difficulty_level, options_raw, raw_blank_count, raw_score_points, tags_raw = values[:10]
+                meaningful_values = [stem, answer, knowledge_l2_name, raw_question_type, explanation, options_raw, raw_score_points, tags_raw]
+                if not any(meaningful_values):
+                    continue
+                stem_preview = self._stem_preview(stem)
+                if not stem:
+                    skipped += 1
+                    failed_rows.append(ImportFailureItem(row_number=row_index, reason="题目为空", stem_preview=stem_preview))
+                    continue
+                if not answer:
+                    skipped += 1
+                    failed_rows.append(ImportFailureItem(row_number=row_index, reason="答案为空", stem_preview=stem_preview))
+                    continue
+                if not knowledge_l2_name:
+                    skipped += 1
+                    failed_rows.append(ImportFailureItem(row_number=row_index, reason="二级知识点为空，请从下拉框选择", stem_preview=stem_preview))
+                    continue
+                if raw_question_type and self._normalize_question_type_alias(raw_question_type) is None:
+                    skipped += 1
+                    failed_rows.append(
+                        ImportFailureItem(
+                            row_number=row_index,
+                            reason="题型无法识别，请填写选择题、判断题、填空题、解答题或分步计算题",
+                            stem_preview=stem_preview,
+                        )
+                    )
+                    continue
+                try:
+                    difficulty_level = self._coerce_difficulty_level(raw_difficulty_level, None)
+                except ValueError:
+                    skipped += 1
+                    failed_rows.append(
+                        ImportFailureItem(
+                            row_number=row_index,
+                            reason="难度级别必须是 1-5 的数字",
+                            stem_preview=stem_preview,
+                        )
+                    )
+                    continue
+
+                options = self._parse_csv_options(options_raw)
+                score_points = self._parse_csv_score_points(raw_score_points)
+                question_type = self._resolve_question_type(raw_question_type, stem, answer, score_points).value
+                if options:
+                    question_type = QuestionType.choice.value
+                if question_type == QuestionType.choice.value and not options:
+                    options = self._infer_options(QuestionType.choice, stem)
+                if question_type == QuestionType.choice.value and not options:
+                    skipped += 1
+                    failed_rows.append(
+                        ImportFailureItem(
+                            row_number=row_index,
+                            reason="选择题缺少有效选项，请按 A:选项一|B:选项二 的格式填写",
+                            stem_preview=stem_preview,
+                        )
+                    )
+                    continue
+                if options_raw and question_type != QuestionType.choice.value and not options:
+                    skipped += 1
+                    failed_rows.append(
+                        ImportFailureItem(
+                            row_number=row_index,
+                            reason="选项格式无法识别，请按 A:选项一|B:选项二 的格式填写",
+                            stem_preview=stem_preview,
+                        )
+                    )
+                    continue
+                blank_count = self._parse_csv_blank_count(raw_blank_count, answer, score_points)
+                if question_type in {QuestionType.choice.value, QuestionType.judgment.value, QuestionType.solution.value}:
+                    blank_count = 1
+                tags = [item.strip() for item in re.split(r"[,，]", tags_raw or "") if item.strip()]
+                try:
+                    _, resolved_l2_id = self._resolve_csv_knowledge_binding(
+                        session,
+                        knowledge_l1_id="",
+                        knowledge_l1_name="",
+                        knowledge_l2_id="",
+                        knowledge_l2_name=knowledge_l2_name,
+                        context=context,
+                    )
+                    resolved_l1_id, resolved_l2_id = self._validate_knowledge_binding(session, "", resolved_l2_id)
+                except ValueError as exc:
+                    skipped += 1
+                    reason = self._friendly_import_reason(exc)
+                    failed_rows.append(
+                        ImportFailureItem(
+                            row_number=row_index,
+                            reason=reason,
+                            stem_preview=stem_preview,
+                        )
+                    )
+                    continue
+
+                row_model = QuestionBankORM(
+                    external_id=f"excel_{uuid.uuid4().hex[:8]}",
+                    knowledge_l1_id=resolved_l1_id,
+                    knowledge_l2_id=resolved_l2_id,
+                    topic_id=resolved_l2_id,
+                    stem=stem,
+                    difficulty_level=difficulty_level,
+                    difficulty=self._difficulty_level_to_float(difficulty_level),
+                    answer=answer,
+                    explanation=explanation,
+                    knowledge_tiers=["基础知识点"],
+                    question_type=question_type,
+                    options=options,
+                    blank_count=blank_count,
+                    score_points=score_points,
+                    tags=tags,
+                    status="pending",
+                    source="excel_import",
+                )
+                session.add(row_model)
+                session.flush()
+                imported.append(self._view(session, row_model))
+        return CsvImportResponse(
+            imported_count=len(imported),
+            skipped_count=skipped,
+            questions=imported,
+            failed_rows=failed_rows,
+        )
+
+    def _build_topic_context(
+        self,
+        session,
+        teacher_user_id: int | None = None,
+        grade_level: str | None = None,
+        subject: str | None = None,
+        strict_grade_scope: bool = False,
+    ) -> dict:
+        school_id = None
+        preferred_grades: list[str] = []
+        if teacher_user_id is not None:
+            teacher = session.execute(select(UserORM).where(UserORM.id == teacher_user_id)).scalars().first()
+            if teacher:
+                school_id = teacher.school_id
+            preferred_grades = [
+                grade.strip()
+                for grade in session.execute(
+                    select(ClassroomORM.grade_level).where(ClassroomORM.teacher_user_id == teacher_user_id)
+                ).scalars().all()
+                if grade and grade.strip()
+            ]
+
+        stmt = select(KnowledgeNodeORM).where(KnowledgeNodeORM.is_deleted == 0, KnowledgeNodeORM.level >= 2)
+        if school_id is not None:
+            stmt = stmt.where(KnowledgeNodeORM.school_id == school_id)
+        normalized_grade = (grade_level or "").strip()
+        normalized_subject = (subject or "").strip()
+        if strict_grade_scope and normalized_grade and preferred_grades and normalized_grade not in preferred_grades:
+            raise ValueError("当前年级不在老师所教班级范围内")
+        if normalized_grade:
+            stmt = stmt.where(KnowledgeNodeORM.grade_level == normalized_grade)
+        if normalized_subject:
+            stmt = stmt.where(KnowledgeNodeORM.subject == normalized_subject)
+        nodes = session.execute(stmt.order_by(KnowledgeNodeORM.sort_order.asc(), KnowledgeNodeORM.node_key.asc())).scalars().all()
+
+        parents = {}
+        parent_keys = {node.parent_node_key for node in nodes if node.parent_node_key}
+        if parent_keys:
+            parent_rows = session.execute(
+                select(KnowledgeNodeORM).where(
+                    KnowledgeNodeORM.is_deleted == 0,
+                    KnowledgeNodeORM.node_key.in_(parent_keys),
+                )
+            ).scalars().all()
+            parents = {row.node_key: row for row in parent_rows}
+
+        by_name = defaultdict(list)
+        topics = []
+        for node in nodes:
+            parent = parents.get(node.parent_node_key or "")
+            item = {
+                "knowledge_l2_id": node.node_key,
+                "knowledge_l2_name": node.name.strip(),
+                "knowledge_l1_id": node.parent_node_key or "",
+                "knowledge_l1_name": parent.name.strip() if parent else "",
+                "grade_level": (node.grade_level or "").strip(),
+                "subject": (node.subject or "").strip(),
+            }
+            by_name[node.name.strip()].append(item)
+            topics.append(item)
+        return {
+            "by_name": by_name,
+            "preferred_grades": preferred_grades,
+            "topics": topics,
+        }
+
+    def _build_csv_topic_context(self, session, teacher_user_id: int | None = None) -> dict:
+        return self._build_topic_context(session, teacher_user_id=teacher_user_id)
+
+    def _resolve_csv_knowledge_binding(
+        self,
+        session,
+        *,
+        knowledge_l1_id: str,
+        knowledge_l1_name: str,
+        knowledge_l2_id: str,
+        knowledge_l2_name: str,
+        context: dict,
+    ) -> tuple[str, str]:
+        normalized_l1_id = (knowledge_l1_id or "").strip()
+        normalized_l1_name = (knowledge_l1_name or "").strip()
+        normalized_l2_id = (knowledge_l2_id or "").strip()
+        normalized_l2_name = (knowledge_l2_name or "").strip()
+
+        if normalized_l2_id:
+            return self._validate_knowledge_binding(session, normalized_l1_id, normalized_l2_id)
+
+        candidates = list(context.get("by_name", {}).get(normalized_l2_name, []))
+        if normalized_l1_id:
+            candidates = [item for item in candidates if item["knowledge_l1_id"] == normalized_l1_id]
+        if normalized_l1_name:
+            candidates = [item for item in candidates if item["knowledge_l1_name"] == normalized_l1_name]
+        if not candidates:
+            raise ValueError("knowledge topic not found")
+
+        preferred_grades = context.get("preferred_grades", [])
+        if preferred_grades:
+            preferred = [item for item in candidates if item["grade_level"] in preferred_grades]
+            if preferred:
+                candidates = preferred
+
+        unique_candidates = []
+        seen = set()
+        for item in candidates:
+            key = (item["knowledge_l1_id"], item["knowledge_l2_id"])
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(item)
+        if len(unique_candidates) != 1:
+            raise ValueError("knowledge topic ambiguous")
+
+        candidate = unique_candidates[0]
+        resolved_l1_id = normalized_l1_id or candidate["knowledge_l1_id"]
+        return self._validate_knowledge_binding(session, resolved_l1_id, candidate["knowledge_l2_id"])
+
+    def _validate_excel_template(self, workbook, grade_level: str, subject: str) -> None:
+        if "_meta" not in workbook.sheetnames:
+            raise ValueError("请使用系统下载的 Excel 模板")
+        meta = workbook["_meta"]
+        marker = self._excel_cell_text(meta["A1"].value)
+        if marker != "ZHUYU_EDU_QUESTION_IMPORT_TEMPLATE":
+            raise ValueError("请使用系统下载的 Excel 模板")
+        template_grade = self._excel_cell_text(meta["A2"].value)
+        template_subject = self._excel_cell_text(meta["A3"].value)
+        if template_grade != grade_level or template_subject != subject:
+            raise ValueError("Excel 模板的年级或学科与当前选择不一致，请重新下载模板")
+
+    def _excel_cell_text(self, value) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    def _excel_column_name(self, index: int) -> str:
+        chars = []
+        while index > 0:
+            index, remainder = divmod(index - 1, 26)
+            chars.append(chr(65 + remainder))
+        return "".join(reversed(chars))
 
     def _topic_exists(self, topic_id: str) -> bool:
         if self.repository.has_topic(topic_id):
@@ -1191,11 +1672,11 @@ class QuestionBankService:
         except json.JSONDecodeError:
             pass
         options = []
-        for part in re.split(r"\|", raw):
+        for part in re.split(r"[|｜\n\r]+", raw):
             part = part.strip()
             if not part:
                 continue
-            match = re.match(r"^([A-Da-d])\s*[:：.．、]\s*(.+)$", part)
+            match = re.match(r"^([A-Da-d])\s*[:：.．、\)]\s*(.+)$", part)
             if match:
                 options.append({"key": match.group(1).upper(), "content": match.group(2).strip()})
         return options
@@ -1230,7 +1711,7 @@ class QuestionBankService:
         except (json.JSONDecodeError, TypeError, ValueError):
             pass
         points = []
-        for index, part in enumerate(re.split(r"\|", raw), start=1):
+        for index, part in enumerate(re.split(r"[|｜\n\r]+", raw), start=1):
             part = part.strip()
             if not part:
                 continue
@@ -1298,6 +1779,25 @@ class QuestionBankService:
         if not normalized:
             return ["基础知识点"]
         return normalized
+
+    def _friendly_import_reason(self, error: Exception) -> str:
+        raw = str(error).strip()
+        if not raw:
+            return "导入失败，请检查该行内容"
+        lowered = raw.lower()
+        if "knowledge topic not found" in lowered:
+            return "二级知识点不存在，请确认使用模板下拉框中的知识点"
+        if "knowledge topic ambiguous" in lowered:
+            return "二级知识点名称重复，当前无法唯一匹配，请联系管理员检查知识点配置"
+        return raw
+
+    def _stem_preview(self, stem: str, limit: int = 24) -> str:
+        normalized = re.sub(r"\s+", " ", (stem or "").strip())
+        if not normalized:
+            return ""
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit] + "..."
 
     def _validate_knowledge_binding(self, session, knowledge_l1_id: str, knowledge_l2_id: str) -> tuple[str, str]:
         node_l2 = session.execute(

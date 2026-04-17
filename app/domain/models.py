@@ -514,11 +514,21 @@ class TeacherStudentSummary(BaseModel):
     student_profile_id: int
     name: str
     grade_level: str
+    classroom_name: str = ""
+    target_subject: str = ""
     target_topic_id: str
     overall_mastery: float
     latest_report_at: Optional[datetime] = None
     recent_mistake_count: int = 0
     recent_practice_accuracy: float = 0.0
+    subject_summaries: List["TeacherStudentSubjectSummary"] = Field(default_factory=list)
+
+
+class TeacherStudentSubjectSummary(BaseModel):
+    subject: str
+    mastery: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    accuracy: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    practice_count: int = 0
 
 
 class TeacherDashboard(BaseModel):
@@ -528,6 +538,9 @@ class TeacherDashboard(BaseModel):
     average_mastery: float
     average_accuracy: float
     students: List[TeacherStudentSummary]
+
+
+TeacherStudentSummary.model_rebuild()
 
 
 class QuestionBankImportItem(BaseModel):
@@ -556,8 +569,13 @@ class QuestionBankItemView(BaseModel):
     id: int
     external_id: str
     knowledge_l1_id: str
+    knowledge_l1_name: str = ""
     knowledge_l2_id: str
+    knowledge_l2_name: str = ""
     topic_id: str
+    topic_name: str = ""
+    subject: str = ""
+    grade_level: str = ""
     stem: str
     difficulty_level: int = Field(ge=1, le=5)
     difficulty: float
@@ -580,6 +598,8 @@ class QuestionGenerateRequest(BaseModel):
     difficulty_level_min: int = Field(default=2, ge=1, le=5)
     difficulty_level_max: int = Field(default=4, ge=1, le=5)
     question_type: QuestionType = QuestionType.blank
+    include_explanation: bool = True
+    include_answer_sheet: bool = False
 
 
 class QuestionGenerateResponse(BaseModel):
@@ -597,10 +617,17 @@ class QuestionReviewResponse(BaseModel):
     questions: List[QuestionBankItemView]
 
 
+class ImportFailureItem(BaseModel):
+    row_number: int
+    reason: str
+    stem_preview: str = ""
+
+
 class CsvImportResponse(BaseModel):
     imported_count: int
     skipped_count: int
     questions: List[QuestionBankItemView]
+    failed_rows: List[ImportFailureItem] = Field(default_factory=list)
 
 
 class PracticeSubmissionRequest(BaseModel):
@@ -709,6 +736,9 @@ class PracticeAnalyticsSummary(BaseModel):
 
 class KnowledgeDocumentImportItem(BaseModel):
     title: str = Field(min_length=1, max_length=255)
+    school_id: Optional[int] = None
+    grade_level: str = ""
+    subject: str = ""
     topic_id: Optional[str] = None
     doc_type: str = Field(min_length=1, max_length=80)
     source_name: str = Field(min_length=1, max_length=255)
@@ -729,7 +759,10 @@ class KnowledgeChunkPreview(BaseModel):
 class KnowledgeDocumentView(BaseModel):
     id: int
     title: str
+    school_id: Optional[int] = None
     topic_id: Optional[str] = None
+    subject: str = ""
+    grade_level: str = ""
     doc_type: str
     source_name: str
     chunk_count: int
@@ -765,6 +798,8 @@ class KnowledgeDirectoryImportResponse(BaseModel):
 
 class KnowledgeSearchRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
+    grade_level: str = ""
+    subject: str = ""
     topic_id: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
     strategy: str = "hybrid"
@@ -774,6 +809,8 @@ class KnowledgeSearchHit(BaseModel):
     document_title: str
     doc_type: str
     source_name: str
+    grade_level: str = ""
+    subject: str = ""
     topic_id: Optional[str] = None
     snippet: str
     score: float

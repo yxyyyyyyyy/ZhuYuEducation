@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import random
 
 from sqlalchemy import select
 
@@ -163,7 +164,34 @@ class ServiceContainer:
                 session.add(default_textbook)
                 session.flush()
             default_textbook_id = default_textbook.id
-            available_topics = self.knowledge_config_service.list_topics_for_school(demo_school.id, default_textbook_id)
+            extra_subjects = [
+                ("语文", "初二语文教材", "初二"),
+                ("英语", "初二英语教材", "初二"),
+                ("物理", "初三物理教材", "初三"),
+                ("化学", "初三化学教材", "初三"),
+                ("生物", "初一生物教材", "初一"),
+                ("历史", "初二历史教材", "初二"),
+                ("地理", "初一地理教材", "初一"),
+            ]
+            for sub, tname, glevel in extra_subjects:
+                existing_tb = session.execute(
+                    select(TextbookORM).where(
+                        TextbookORM.school_id == demo_school.id,
+                        TextbookORM.subject == sub,
+                    )
+                ).scalars().first()
+                if not existing_tb:
+                    tb = TextbookORM(
+                        school_id=demo_school.id,
+                        grade_level=glevel,
+                        subject=sub,
+                        name=tname,
+                        is_default=0,
+                    )
+                    session.add(tb)
+                    session.flush()
+                    self.knowledge_config_service.seed_textbook_nodes(demo_school.id, tb.id)
+            available_topics = self.knowledge_config_service.list_topics_for_school(demo_school.id, None)
             default_topic = next((item for item in available_topics if item.level == 2), None)
             default_topic_id = default_topic.id if default_topic else ""
             demo_classroom = session.execute(
@@ -234,6 +262,92 @@ class ServiceContainer:
                 ).scalars().first()
                 if not existing_enrollment:
                     session.add(ClassroomEnrollmentORM(classroom_id=demo_classroom.id, student_profile_id=demo_profile.id))
+
+            demo_classroom2 = session.execute(
+                select(ClassroomORM).where(
+                    ClassroomORM.teacher_user_id == demo_user.id,
+                    ClassroomORM.name == "八年级2班",
+                )
+            ).scalars().first()
+            if not demo_classroom2:
+                demo_classroom2 = ClassroomORM(
+                    school_id=demo_school.id,
+                    teacher_user_id=demo_user.id,
+                    textbook_id=default_textbook_id,
+                    name="八年级2班",
+                    grade_level="初二",
+                    invite_code="ZYU-DEMO02",
+                    description="演示班级2",
+                )
+                session.add(demo_classroom2)
+                session.flush()
+            else:
+                demo_classroom2.invite_code = "ZYU-DEMO02"
+                demo_classroom2.textbook_id = demo_classroom2.textbook_id or default_textbook_id
+
+            demo_student_names = [
+                ("张明轩", "初二", "数学", demo_classroom.id),
+                ("李思涵", "初二", "语文", demo_classroom.id),
+                ("王子涵", "初二", "英语", demo_classroom.id),
+                ("赵雨萱", "初二", "数学", demo_classroom.id),
+                ("刘浩然", "初二", "物理", demo_classroom.id),
+                ("周雅婷", "初二", "语文", demo_classroom.id),
+                ("陈诗琪", "初二", "数学", demo_classroom2.id),
+                ("杨博文", "初二", "英语", demo_classroom2.id),
+                ("孙晓峰", "初二", "物理", demo_classroom2.id),
+                ("吴佳怡", "初二", "语文", demo_classroom2.id),
+                ("黄子轩", "初二", "数学", demo_classroom2.id),
+                ("林雨彤", "初二", "英语", demo_classroom2.id),
+            ]
+            for sname, sgrade, ssubject, sclassroom_id in demo_student_names:
+                existing = session.execute(
+                    select(StudentProfileORM).where(
+                        StudentProfileORM.name == sname,
+                        StudentProfileORM.teacher_user_id == demo_user.id,
+                    )
+                ).scalars().first()
+                if existing:
+                    continue
+                subject_topic = next((t for t in available_topics if t.level == 2 and t.subject == ssubject), None)
+                s_topic_id = subject_topic.id if subject_topic else default_topic_id
+                s_textbook_id = default_textbook_id
+                if subject_topic:
+                    subject_tb = session.execute(
+                        select(TextbookORM).where(
+                            TextbookORM.school_id == demo_school.id,
+                            TextbookORM.subject == ssubject,
+                        )
+                    ).scalars().first()
+                    if subject_tb:
+                        s_textbook_id = subject_tb.id
+                s_profile = StudentProfileORM(
+                    user_id=demo_user.id,
+                    school_id=demo_school.id,
+                    classroom_id=sclassroom_id,
+                    teacher_user_id=demo_user.id,
+                    textbook_id=s_textbook_id,
+                    name=sname,
+                    grade_level=sgrade,
+                    target_subject=ssubject,
+                    target_topic_id=s_topic_id,
+                )
+                session.add(s_profile)
+                session.flush()
+                session.add(ClassroomEnrollmentORM(classroom_id=sclassroom_id, student_profile_id=s_profile.id))
+                for topic in available_topics:
+                    if topic.level != 2:
+                        continue
+                    session.add(
+                        StudentMasteryORM(
+                            student_profile_id=s_profile.id,
+                            topic_id=topic.id,
+                            mastery=round(random.uniform(0.1, 0.9), 2),
+                            practice_count=random.randint(2, 20),
+                            correct_count=random.randint(1, 15),
+                            last_practiced_at=None,
+                            recent_errors=[],
+                        )
+                    )
 
     def _seed_admin(self) -> None:
         email = os.getenv("ADMIN_EMAIL", "admin@zhuyu.local").strip()

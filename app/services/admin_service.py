@@ -476,6 +476,9 @@ class AdminService:
                     "difficulty": row.difficulty,
                     "knowledge_tiers": row.knowledge_tiers or ["基础知识点"],
                     "question_type": row.question_type,
+                    "options": row.options or [],
+                    "blank_count": row.blank_count or 1,
+                    "score_points": row.score_points or [],
                     "status": row.status,
                     "source": row.source,
                     "tags": row.tags or [],
@@ -555,10 +558,8 @@ class AdminService:
             [
                 "年级",
                 "学科",
-                "一级知识点ID",
-                "一级知识点",
-                "二级知识点ID",
-                "二级知识点",
+                "一级知识点名称",
+                "二级知识点名称",
                 "题目ID",
                 "题目",
                 "答案",
@@ -567,6 +568,11 @@ class AdminService:
                 "状态",
                 "题型",
                 "来源",
+                "解析",
+                "选项",
+                "空数",
+                "得分点",
+                "标签",
             ]
         )
         for item in sorted(payload["items"], key=lambda row: (row["subject"], row["grade_level"], row["topic_name"], row["external_id"])):
@@ -574,9 +580,7 @@ class AdminService:
                 [
                     item["grade_level"],
                     item["subject"],
-                    item.get("knowledge_l1_id", ""),
                     item.get("knowledge_l1_name", ""),
-                    item.get("knowledge_l2_id", ""),
                     item.get("knowledge_l2_name", ""),
                     item["external_id"],
                     item["stem"],
@@ -586,9 +590,40 @@ class AdminService:
                     item["status"],
                     item["question_type"],
                     item["source"],
+                    item.get("explanation", ""),
+                    self._format_export_options(item.get("options", [])),
+                    item.get("blank_count", 1),
+                    self._format_export_score_points(item.get("score_points", [])),
+                    ",".join(item.get("tags", [])),
                 ]
             )
         return output.getvalue()
+
+    def _format_export_options(self, options: list[dict]) -> str:
+        if not options:
+            return ""
+        return "|".join(
+            f"{str(item.get('key', '')).strip()}:{str(item.get('content', '')).strip()}"
+            for item in options
+            if str(item.get("key", "")).strip() and str(item.get("content", "")).strip()
+        )
+
+    def _format_export_score_points(self, score_points: list[dict]) -> str:
+        if not score_points:
+            return ""
+        formatted = []
+        for item in score_points:
+            title = str(item.get("title", "")).strip()
+            if not title:
+                continue
+            points = item.get("points", 1)
+            keywords = "/".join(
+                str(keyword).strip()
+                for keyword in item.get("keywords", [])
+                if str(keyword).strip()
+            )
+            formatted.append(f"{title}:{points}:{keywords}" if keywords else f"{title}:{points}")
+        return "|".join(formatted)
 
     def list_textbooks(self, admin_user_id: int) -> list:
         with sql_repository.session() as session:

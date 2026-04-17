@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from app.core.database import (
     ClassroomEnrollmentORM,
     ClassroomORM,
+    KnowledgeNodeORM,
     MistakeRecordORM,
     PracticeRecordORM,
     ReportRecordORM,
@@ -17,7 +18,16 @@ from app.core.database import (
     TextbookORM,
     UserORM,
 )
-from app.domain.models import ClassroomCreate, ClassroomView, SchoolCreate, SchoolView, TeacherDashboard, TeacherOption, TeacherStudentSummary
+from app.domain.models import (
+    ClassroomCreate,
+    ClassroomView,
+    SchoolCreate,
+    SchoolView,
+    TeacherDashboard,
+    TeacherOption,
+    TeacherStudentSubjectSummary,
+    TeacherStudentSummary,
+)
 from app.repositories.sql_repository import sql_repository
 
 
@@ -41,6 +51,14 @@ class TeacherService:
             ).scalars().all()
             student_ids = [item.id for item in students]
 
+            classroom_ids = [item.classroom_id for item in students if item.classroom_id]
+            classroom_map = {}
+            if classroom_ids:
+                classroom_rows = session.execute(
+                    select(ClassroomORM).where(ClassroomORM.id.in_(set(classroom_ids)))
+                ).scalars().all()
+                classroom_map = {row.id: row.name for row in classroom_rows}
+
             mastery_rows = session.execute(
                 select(StudentMasteryORM).where(StudentMasteryORM.student_profile_id.in_(student_ids))
             ).scalars().all() if student_ids else []
@@ -56,14 +74,27 @@ class TeacherService:
             report_rows = session.execute(
                 select(ReportRecordORM).where(ReportRecordORM.student_profile_id.in_(student_ids))
             ).scalars().all() if student_ids else []
+            topic_meta, grade_subjects = self._knowledge_meta_for_school(session, teacher.school_id if teacher else None)
 
         mastery_map = defaultdict(list)
         for row in mastery_rows:
             mastery_map[row.student_profile_id].append(row.mastery)
 
+        mastery_subject_map = defaultdict(lambda: defaultdict(list))
+        for row in mastery_rows:
+            subject = (topic_meta.get(row.topic_id, {}).get("subject") or "").strip()
+            if subject:
+                mastery_subject_map[row.student_profile_id][subject].append(row.mastery)
+
         practice_map = defaultdict(list)
         for row in practice_rows:
             practice_map[row.student_profile_id].append(row)
+
+        practice_subject_map = defaultdict(lambda: defaultdict(list))
+        for row in practice_rows:
+            subject = (topic_meta.get(row.topic_id, {}).get("subject") or "").strip()
+            if subject:
+                practice_subject_map[row.student_profile_id][subject].append(row)
 
         mistake_count = defaultdict(int)
         for row in mistake_rows:
@@ -82,16 +113,47 @@ class TeacherService:
                 if student_practice
                 else 0.0
             )
+            raw_subject = student.target_subject or ""
+            resolved_subject = (topic_meta.get(student.target_topic_id, {}).get("subject") or raw_subject).strip()
+            student_subjects = list(grade_subjects.get(student.grade_level, []))
+            for subject in mastery_subject_map.get(student.id, {}):
+                if subject and subject not in student_subjects:
+                    student_subjects.append(subject)
+            for subject in practice_subject_map.get(student.id, {}):
+                if subject and subject not in student_subjects:
+                    student_subjects.append(subject)
+            if resolved_subject and resolved_subject not in student_subjects:
+                student_subjects.append(resolved_subject)
+            subject_summaries = []
+            for subject in student_subjects:
+                subject_mastery = mastery_subject_map.get(student.id, {}).get(subject, [])
+                subject_practice = practice_subject_map.get(student.id, {}).get(subject, [])
+                subject_accuracy = (
+                    sum(1 for item in subject_practice if item.is_correct) / len(subject_practice)
+                    if subject_practice
+                    else None
+                )
+                subject_summaries.append(
+                    TeacherStudentSubjectSummary(
+                        subject=subject,
+                        mastery=round(sum(subject_mastery) / len(subject_mastery), 2) if subject_mastery else None,
+                        accuracy=round(subject_accuracy, 2) if subject_accuracy is not None else None,
+                        practice_count=len(subject_practice),
+                    )
+                )
             summaries.append(
                 TeacherStudentSummary(
                     student_profile_id=student.id,
                     name=student.name,
                     grade_level=student.grade_level,
+                    classroom_name=classroom_map.get(student.classroom_id, "") if student.classroom_id else "未分班",
+                    target_subject=resolved_subject,
                     target_topic_id=student.target_topic_id,
                     overall_mastery=round(sum(mastery_values) / len(mastery_values), 2) if mastery_values else 0.0,
                     latest_report_at=latest_report.get(student.id),
                     recent_mistake_count=mistake_count.get(student.id, 0),
                     recent_practice_accuracy=round(accuracy, 2),
+                    subject_summaries=subject_summaries,
                 )
             )
 
@@ -114,6 +176,34 @@ class TeacherService:
             average_accuracy=avg_accuracy,
             students=summaries,
         )
+
+    def _knowledge_meta_for_school(self, session, school_id: int | None) -> tuple[dict[str, dict], dict[str, list[str]]]:
+        stmt = select(KnowledgeNodeORM).where(KnowledgeNodeORM.is_deleted == 0)
+        if school_id is not None:
+            stmt = stmt.where(KnowledgeNodeORM.school_id == school_id)
+        rows = session.execute(
+            stmt.order_by(KnowledgeNodeORM.grade_level.asc(), KnowledgeNodeORM.subject.asc(), KnowledgeNodeORM.sort_order.asc())
+        ).scalars().all()
+        topic_meta: dict[str, dict] = {}
+        grade_subjects = defaultdict(set)
+        for row in rows:
+            meta = {
+                "name": row.name,
+                "subject": row.subject or "",
+                "grade_level": row.grade_level or "",
+                "parent_id": row.parent_node_key or "",
+                "level": row.level,
+            }
+            topic_meta[row.node_key] = meta
+            if row.topic_ref_id:
+                topic_meta[row.topic_ref_id] = meta
+            if row.subject and row.grade_level:
+                grade_subjects[row.grade_level].add(row.subject)
+        ordered_grade_subjects = {
+            grade: sorted(subjects, key=lambda item: item)
+            for grade, subjects in grade_subjects.items()
+        }
+        return topic_meta, ordered_grade_subjects
 
     def list_schools(self, school_id: int | None = None) -> list[SchoolView]:
         with sql_repository.session() as session:

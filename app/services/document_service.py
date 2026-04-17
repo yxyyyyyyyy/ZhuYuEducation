@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
-from app.core.database import KnowledgeChunkORM, KnowledgeDocumentORM, RetrievalCaseORM
+from app.core.database import ClassroomORM, KnowledgeChunkORM, KnowledgeDocumentORM, KnowledgeNodeORM, RetrievalCaseORM, UserORM
 from app.domain.models import (
     ImportedDocumentFile,
     KnowledgeDirectoryImportRequest,
@@ -49,9 +50,22 @@ class DocumentService:
     ) -> list[KnowledgeDocumentView]:
         imported = []
         with sql_repository.session() as session:
+            teacher_scope = self._teacher_scope(session, user_id) if user_id is not None else None
             for item in request.documents:
+                school_id, grade_level, subject = self._normalize_document_scope(
+                    session,
+                    teacher_scope=teacher_scope,
+                    school_id=item.school_id,
+                    grade_level=item.grade_level,
+                    subject=item.subject,
+                    topic_id=item.topic_id,
+                    require_scope=False,
+                )
                 doc = KnowledgeDocumentORM(
+                    school_id=school_id,
                     teacher_user_id=user_id,
+                    grade_level=grade_level,
+                    subject=subject,
                     title=item.title,
                     topic_id=item.topic_id,
                     doc_type=item.doc_type,
@@ -67,7 +81,10 @@ class DocumentService:
                     session.add(
                         KnowledgeChunkORM(
                             document_id=doc.id,
+                            school_id=school_id,
                             teacher_user_id=user_id,
+                            grade_level=grade_level,
+                            subject=subject,
                             topic_id=item.topic_id,
                             doc_type=item.doc_type,
                             source_name=item.source_name,
@@ -79,12 +96,17 @@ class DocumentService:
                         )
                     )
                 session.flush()
-                imported.append(self._document_view(doc, chunks=[
-                    chunk_row
-                    for chunk_row in session.execute(
-                        select(KnowledgeChunkORM).where(KnowledgeChunkORM.document_id == doc.id)
-                    ).scalars().all()
-                ]))
+                topic_meta = self._topic_meta_map(session, [doc.topic_id] if doc.topic_id else [])
+                imported.append(self._document_view(
+                    doc,
+                    chunks=[
+                        chunk_row
+                        for chunk_row in session.execute(
+                            select(KnowledgeChunkORM).where(KnowledgeChunkORM.document_id == doc.id)
+                        ).scalars().all()
+                    ],
+                    topic_meta=topic_meta,
+                ))
         return imported
 
     def import_uploaded_document(
@@ -92,19 +114,22 @@ class DocumentService:
         filename: str,
         content: bytes,
         title: str | None,
-        topic_id: str | None,
+        grade_level: str,
+        subject: str,
         doc_type: str,
         source_name: str | None,
         user_id: int,
     ) -> KnowledgeDocumentView:
         text = self._read_upload(filename, content)
         if not text.strip():
-            raise ValueError("uploaded document has no readable text")
+            raise ValueError("文件已上传但未提取到可读文本")
         request = KnowledgeDocumentImportRequest(
             documents=[
                 {
                     "title": (title or Path(filename).stem).strip(),
-                    "topic_id": topic_id,
+                    "grade_level": grade_level,
+                    "subject": subject,
+                    "topic_id": None,
                     "doc_type": doc_type,
                     "source_name": (source_name or filename).strip(),
                     "content": text,
@@ -113,15 +138,26 @@ class DocumentService:
         )
         return self.import_documents(request, user_id=user_id)[0]
 
-    def list_documents(self, user_id: int | None = None) -> list[KnowledgeDocumentView]:
+    def list_documents(
+        self,
+        user_id: int | None = None,
+        grade_level: str | None = None,
+        subject: str | None = None,
+    ) -> list[KnowledgeDocumentView]:
         with sql_repository.session() as session:
             stmt = select(KnowledgeDocumentORM).order_by(KnowledgeDocumentORM.created_at.desc())
+            teacher_scope = self._teacher_scope(session, user_id) if user_id is not None else None
             if user_id is not None:
-                stmt = stmt.where(
-                    (KnowledgeDocumentORM.teacher_user_id == user_id)
-                    | (KnowledgeDocumentORM.teacher_user_id.is_(None))
-                )
+                stmt = stmt.where(KnowledgeDocumentORM.school_id == teacher_scope["school_id"])
+            normalized_grade = (grade_level or "").strip()
+            normalized_subject = (subject or "").strip()
+            if normalized_grade:
+                self._validate_scope_choice(session, teacher_scope, normalized_grade, normalized_subject if normalized_subject else None)
+                stmt = stmt.where(KnowledgeDocumentORM.grade_level == normalized_grade)
+            if normalized_subject:
+                stmt = stmt.where(KnowledgeDocumentORM.subject == normalized_subject)
             docs = session.execute(stmt).scalars().all()
+            topic_meta = self._topic_meta_map(session, [doc.topic_id for doc in docs if doc.topic_id])
             views = []
             for doc in docs:
                 chunks = session.execute(
@@ -129,7 +165,7 @@ class DocumentService:
                     .where(KnowledgeChunkORM.document_id == doc.id)
                     .order_by(KnowledgeChunkORM.chunk_index)
                 ).scalars().all()
-                views.append(self._document_view(doc, chunks))
+                views.append(self._document_view(doc, chunks, topic_meta))
             return views
 
     def delete_document(self, document_id: int, user_id: int) -> None:
@@ -221,10 +257,8 @@ class DocumentService:
         with sql_repository.session() as session:
             stmt = select(KnowledgeChunkORM).order_by(KnowledgeChunkORM.id)
             if user_id is not None:
-                stmt = stmt.where(
-                    (KnowledgeChunkORM.teacher_user_id == user_id)
-                    | (KnowledgeChunkORM.teacher_user_id.is_(None))
-                )
+                teacher_scope = self._teacher_scope(session, user_id)
+                stmt = stmt.where(KnowledgeChunkORM.school_id == teacher_scope["school_id"])
             chunks = session.execute(stmt).scalars().all()
             texts = [chunk.content for chunk in chunks]
             if not texts:
@@ -247,23 +281,19 @@ class DocumentService:
         user_id: int | None = None,
     ) -> list[KnowledgeSearchHit]:
         with sql_repository.session() as session:
+            teacher_scope = self._teacher_scope(session, user_id) if user_id is not None else None
+            normalized_grade = (request.grade_level or "").strip()
+            normalized_subject = (request.subject or "").strip()
+            self._validate_scope_choice(session, teacher_scope, normalized_grade, normalized_subject, require_subject=True)
             stmt = select(KnowledgeChunkORM)
-            if request.topic_id:
-                stmt = stmt.where(
-                    (KnowledgeChunkORM.topic_id == request.topic_id) | (KnowledgeChunkORM.topic_id.is_(None))
-                )
             if user_id is not None:
-                stmt = stmt.where(
-                    (KnowledgeChunkORM.teacher_user_id == user_id)
-                    | (KnowledgeChunkORM.teacher_user_id.is_(None))
-                )
+                stmt = stmt.where(KnowledgeChunkORM.school_id == teacher_scope["school_id"])
+            stmt = stmt.where(KnowledgeChunkORM.grade_level == normalized_grade)
+            stmt = stmt.where(KnowledgeChunkORM.subject == normalized_subject)
             chunks = session.execute(stmt).scalars().all()
             doc_stmt = select(KnowledgeDocumentORM)
             if user_id is not None:
-                doc_stmt = doc_stmt.where(
-                    (KnowledgeDocumentORM.teacher_user_id == user_id)
-                    | (KnowledgeDocumentORM.teacher_user_id.is_(None))
-                )
+                doc_stmt = doc_stmt.where(KnowledgeDocumentORM.school_id == teacher_scope["school_id"])
             docs = {doc.id: doc for doc in session.execute(doc_stmt).scalars().all()}
 
         preferred_doc_type = self._preferred_doc_type(request.query)
@@ -279,6 +309,7 @@ class DocumentService:
             )
             for chunk in chunks
         ]
+        chunk_map = {chunk.id: chunk for chunk in chunks}
         ranked = self.retrieval_service.rank_with_strategy(
             strategy=request.strategy,
             query=request.query,
@@ -315,6 +346,8 @@ class DocumentService:
                 document_title=item.title,
                 doc_type=item.doc_type or "unknown",
                 source_name=item.source_name or "unknown",
+                grade_level=(chunk_map.get(item.identifier).grade_level if chunk_map.get(item.identifier) else ""),
+                subject=(chunk_map.get(item.identifier).subject if chunk_map.get(item.identifier) else ""),
                 topic_id=item.topic_id,
                 snippet=item.content[:160],
                 score=item.final_score,
@@ -508,7 +541,10 @@ class DocumentService:
         self,
         doc: KnowledgeDocumentORM,
         chunks: list[KnowledgeChunkORM],
+        topic_meta: dict[str, dict] | None = None,
     ) -> KnowledgeDocumentView:
+        topic_meta = topic_meta or {}
+        meta = topic_meta.get(doc.topic_id or "", {})
         previews = [
             KnowledgeChunkPreview(
                 id=chunk.id,
@@ -521,7 +557,10 @@ class DocumentService:
         return KnowledgeDocumentView(
             id=doc.id,
             title=doc.title,
+            school_id=doc.school_id,
             topic_id=doc.topic_id,
+            subject=doc.subject or meta.get("subject", ""),
+            grade_level=doc.grade_level or meta.get("grade_level", ""),
             doc_type=doc.doc_type,
             source_name=doc.source_name,
             chunk_count=len(chunks),
@@ -529,8 +568,113 @@ class DocumentService:
             created_at=doc.created_at,
             content_preview=(doc.content or "")[:220],
             chunk_previews=previews,
-            can_delete=doc.teacher_user_id is not None,
+            can_delete=bool(doc.teacher_user_id),
         )
+
+    def _teacher_scope(self, session, user_id: int | None) -> dict | None:
+        if user_id is None:
+            return None
+        teacher = session.execute(select(UserORM).where(UserORM.id == user_id)).scalars().first()
+        if not teacher or not teacher.school_id:
+            raise ValueError("当前老师未绑定学校")
+        grades = sorted({
+            grade.strip()
+            for grade in session.execute(
+                select(ClassroomORM.grade_level).where(ClassroomORM.teacher_user_id == user_id)
+            ).scalars().all()
+            if grade and grade.strip()
+        })
+        return {
+            "school_id": teacher.school_id,
+            "teacher_user_id": user_id,
+            "grades": grades,
+        }
+
+    def _normalize_document_scope(
+        self,
+        session,
+        *,
+        teacher_scope: dict | None,
+        school_id: int | None,
+        grade_level: str | None,
+        subject: str | None,
+        topic_id: str | None,
+        require_scope: bool,
+    ) -> tuple[int | None, str, str]:
+        normalized_school_id = school_id
+        normalized_grade = (grade_level or "").strip()
+        normalized_subject = (subject or "").strip()
+        if topic_id:
+            topic_meta = self._topic_meta_map(session, [topic_id]).get(topic_id, {})
+            if not normalized_grade:
+                normalized_grade = (topic_meta.get("grade_level") or "").strip()
+            if not normalized_subject:
+                normalized_subject = (topic_meta.get("subject") or "").strip()
+        if teacher_scope is not None:
+            normalized_school_id = teacher_scope["school_id"]
+            self._validate_scope_choice(
+                session,
+                teacher_scope,
+                normalized_grade,
+                normalized_subject if normalized_subject else None,
+                require_subject=require_scope,
+            )
+        elif require_scope and (not normalized_grade or not normalized_subject):
+            raise ValueError("资料需要绑定年级和学科")
+        return normalized_school_id, normalized_grade, normalized_subject
+
+    def _validate_scope_choice(
+        self,
+        session,
+        teacher_scope: dict | None,
+        grade_level: str | None,
+        subject: str | None = None,
+        require_subject: bool = False,
+    ) -> None:
+        normalized_grade = (grade_level or "").strip()
+        normalized_subject = (subject or "").strip()
+        if not normalized_grade:
+            raise ValueError("请选择年级")
+        if require_subject and not normalized_subject:
+            raise ValueError("请选择学科")
+        if teacher_scope is None:
+            return
+        allowed_grades = teacher_scope.get("grades", [])
+        if allowed_grades and normalized_grade not in allowed_grades:
+            raise ValueError("当前年级不在老师所教班级范围内")
+        if normalized_subject:
+            row = session.execute(
+                select(KnowledgeNodeORM.id).where(
+                    KnowledgeNodeORM.is_deleted == 0,
+                    KnowledgeNodeORM.school_id == teacher_scope["school_id"],
+                    KnowledgeNodeORM.grade_level == normalized_grade,
+                    KnowledgeNodeORM.subject == normalized_subject,
+                )
+            ).scalars().first()
+            if not row:
+                raise ValueError("当前学科不在老师可用知识范围内")
+
+    def _topic_meta_map(self, session, topic_ids: list[str]) -> dict[str, dict]:
+        normalized_ids = {topic_id.strip() for topic_id in topic_ids if topic_id and topic_id.strip()}
+        if not normalized_ids:
+            return {}
+        rows = session.execute(
+            select(KnowledgeNodeORM).where(
+                KnowledgeNodeORM.is_deleted == 0,
+                or_(KnowledgeNodeORM.node_key.in_(normalized_ids), KnowledgeNodeORM.topic_ref_id.in_(normalized_ids)),
+            )
+        ).scalars().all()
+        meta_map: dict[str, dict] = {}
+        for row in rows:
+            meta = {
+                "subject": row.subject or "",
+                "grade_level": row.grade_level or "",
+                "name": row.name,
+            }
+            meta_map[row.node_key] = meta
+            if row.topic_ref_id:
+                meta_map[row.topic_ref_id] = meta
+        return meta_map
 
     def _retrieval_case_view(self, row: RetrievalCaseORM) -> RetrievalCaseView:
         return RetrievalCaseView(
@@ -581,10 +725,14 @@ class DocumentService:
             if suffix in {".md", ".markdown", ".txt"}:
                 return path.read_text(encoding="utf-8", errors="ignore")
             if suffix == ".pdf":
-                from pypdf import PdfReader
-
-                reader = PdfReader(str(path))
-                return "\n".join((page.extract_text() or "") for page in reader.pages)
+                content = path.read_bytes()
+                extracted = self._read_pdf_text_bytes(content)
+                if self._has_readable_text(extracted):
+                    return extracted
+                ocr_text = self._ocr_pdf_bytes(content)
+                if self._has_readable_text(ocr_text):
+                    return ocr_text
+                return ""
             if suffix == ".docx":
                 from docx import Document
 
@@ -600,18 +748,78 @@ class DocumentService:
             if suffix in {".md", ".markdown", ".txt"}:
                 return content.decode("utf-8", errors="ignore")
             if suffix == ".pdf":
-                from pypdf import PdfReader
-
-                reader = PdfReader(BytesIO(content))
-                return "\n".join((page.extract_text() or "") for page in reader.pages)
+                extracted = self._read_pdf_text_bytes(content)
+                if self._has_readable_text(extracted):
+                    return extracted
+                ocr_text = self._ocr_pdf_bytes(content)
+                if self._has_readable_text(ocr_text):
+                    return ocr_text
+                raise ValueError("PDF 未提取到可读文本，OCR 识别失败，请上传文字版 PDF 或 docx")
             if suffix == ".docx":
                 from docx import Document
 
                 document = Document(BytesIO(content))
                 return "\n".join(paragraph.text for paragraph in document.paragraphs)
-        except Exception:
-            return ""
-        raise ValueError("unsupported file type")
+        except ValueError:
+            raise
+        except Exception as exc:
+            if suffix == ".pdf":
+                raise ValueError("PDF 文件解析失败，请确认文件未损坏后重试") from exc
+            if suffix == ".docx":
+                raise ValueError("DOCX 文件解析失败，请确认文件格式正确") from exc
+            if suffix in {".md", ".markdown", ".txt"}:
+                raise ValueError("文本文件读取失败，请确认编码格式正确") from exc
+            raise
+        raise ValueError("不支持的文件类型，请上传 txt、md、pdf 或 docx")
+
+    def _read_pdf_text_bytes(self, content: bytes) -> str:
+        from pypdf import PdfReader
+
+        reader = PdfReader(BytesIO(content))
+        return "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+
+    def _has_readable_text(self, text: str, min_chars: int = 12) -> bool:
+        readable = "".join(re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", text or ""))
+        return len(readable) >= min_chars
+
+    def _ocr_pdf_bytes(self, content: bytes) -> str:
+        try:
+            import fitz
+            from PIL import Image
+            import pytesseract
+        except Exception as exc:
+            raise ValueError("PDF 未提取到可读文本，当前服务未启用 OCR，请上传文字版 PDF 或 docx") from exc
+
+        tesseract_cmd = os.getenv("TESSERACT_CMD", "").strip()
+        if tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        elif Path("/opt/homebrew/bin/tesseract").exists():
+            pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
+
+        try:
+            document = fitz.open(stream=content, filetype="pdf")
+        except Exception as exc:
+            raise ValueError("PDF 文件无法解析，请确认文件未损坏后重试") from exc
+
+        ocr_pages: list[str] = []
+        try:
+            for page in document:
+                pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                image = Image.open(BytesIO(pixmap.tobytes("png")))
+                page_text = ""
+                for lang in ("chi_sim+eng", "eng"):
+                    try:
+                        page_text = pytesseract.image_to_string(image, lang=lang).strip()
+                    except Exception:
+                        page_text = ""
+                    if self._has_readable_text(page_text, min_chars=6):
+                        break
+                if page_text:
+                    ocr_pages.append(page_text)
+        finally:
+            document.close()
+
+        return "\n".join(ocr_pages).strip()
 
     def _matches_expected(
         self,

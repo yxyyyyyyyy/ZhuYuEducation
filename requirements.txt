@@ -10,3 +10,7 @@ numpy
 scikit-learn
 pypdf
 python-docx
+openpyxl
+Pillow
+PyMuPDF
+pytesseract

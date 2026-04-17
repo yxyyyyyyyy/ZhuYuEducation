@@ -5,20 +5,35 @@ const state = {
   activePage: "dashboard",
   pendingSelectedIds: new Set(),
   documents: [],
-  retrievalCases: [],
-  retrievalRun: null,
   activeRagTab: "library",
   practiceReviews: [],
   schools: [],
   classrooms: [],
-  studentSort: "name",
+  studentPageData: null,
+  studentSearch: "",
+  collapsedStudentGroups: {},
   dashboardData: null,
   analyticsData: null,
-  generateTemplates: JSON.parse(localStorage.getItem("zhuyu_generate_templates") || "[]"),
+  qbSubject: "",
+  qbGrade: "",
+  qbType: "",
+  qbStatus: "",
+  qbSearch: "",
+  qbItems: [],
 };
 
 function qs(id) {
   return document.getElementById(id);
+}
+
+function bindClick(id, handler) {
+  const el = qs(id);
+  if (el) el.addEventListener("click", handler);
+}
+
+function bindChange(id, handler) {
+  const el = qs(id);
+  if (el) el.addEventListener("change", handler);
 }
 
 function showToast(text) {
@@ -52,6 +67,7 @@ function navigateTo(page) {
   document.querySelectorAll(".page").forEach((section) => {
     section.classList.toggle("active", section.dataset.page === page);
   });
+  syncSearchHelpVisibility();
 }
 
 function showModal(title, message) {
@@ -69,7 +85,9 @@ function friendlySource(source) {
   const map = {
     ai_generated: "AI 生成",
     seed: "系统内置",
+    excel_import: "Excel 导入",
     csv_import: "CSV 导入",
+    word_import: "Word 导入",
     manual: "手动添加",
   };
   return map[source] || source || "系统内置";
@@ -117,6 +135,20 @@ function gradeOptions() {
   return ["小学一年级", "小学二年级", "小学三年级", "小学四年级", "小学五年级", "小学六年级", "初一", "初二", "初三"];
 }
 
+function sortGrades(grades) {
+  const order = gradeOptions();
+  return [...grades].sort((a, b) => {
+    const indexA = order.indexOf(a);
+    const indexB = order.indexOf(b);
+    if (indexA !== -1 || indexB !== -1) {
+      if (indexA === -1) return 1;
+      if (indexB === -1) return -1;
+      return indexA - indexB;
+    }
+    return a.localeCompare(b, "zh");
+  });
+}
+
 function renderQuestionPreview(item) {
   if (item.question_type === "choice" && item.options?.length) {
     return `<div class="option-preview">${item.options.map((option) => `<span>${option.key}. ${option.content}</span>`).join("")}</div>`;
@@ -143,6 +175,7 @@ function renderClassrooms() {
   if (!state.classrooms.length) {
     target.className = "timeline empty-state";
     target.innerHTML = "暂无班级，创建后学生注册时即可选择。";
+    syncGenerateControls();
     return;
   }
   target.className = "timeline";
@@ -159,6 +192,7 @@ function renderClassrooms() {
       <small>老师：${item.teacher_name || state.user?.full_name || "当前老师"}${item.description ? ` · ${item.description}` : ""}</small>
     </article>
   `).join("");
+  syncGenerateControls();
 }
 
 async function api(path, options = {}) {
@@ -167,10 +201,45 @@ async function api(path, options = {}) {
   if (state.token) headers["X-Session-Token"] = state.token;
   const response = await fetch(path, { ...options, headers });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    throw new Error(await extractErrorMessage(response));
   }
   return response.json();
+}
+
+async function extractErrorMessage(response) {
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail.trim();
+      if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
+    } catch {
+      // fall through to plain text
+    }
+  }
+  try {
+    const text = (await response.text()).trim();
+    if (!text) return `Request failed: ${response.status}`;
+    try {
+      const payload = JSON.parse(text);
+      if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail.trim();
+      if (typeof payload?.message === "string" && payload.message.trim()) return payload.message.trim();
+    } catch {
+      // treat as raw text
+    }
+    return text;
+  } catch {
+    return `Request failed: ${response.status}`;
+  }
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function formatDateTime(value) {
@@ -183,58 +252,129 @@ function leafTopics() {
   return state.topics.filter((t) => !parentIds.has(t.id));
 }
 
-function getSubjects() {
-  return [...new Set(leafTopics().map((t) => t.subject).filter(Boolean))].sort();
+function getGrades() {
+  return sortGrades([...new Set(state.topics.map((t) => t.grade_level).filter(Boolean))]);
 }
 
-function getGradesBySubject(subject) {
-  return [...new Set(leafTopics().filter((t) => t.subject === subject).map((t) => t.grade_level).filter(Boolean))].sort();
+function getTeacherGrades() {
+  return sortGrades([...new Set(state.classrooms.map((item) => item.grade_level).filter(Boolean))]);
 }
 
-function getTopicsBySubjectAndGrade(subject, grade) {
-  return leafTopics().filter((t) => t.subject === subject && (!grade || t.grade_level === grade));
+function getSubjectsByGrade(grade) {
+  return [...new Set(state.topics.filter((t) => !grade || t.grade_level === grade).map((t) => t.subject).filter(Boolean))].sort();
+}
+
+function getTopicsByGradeAndSubject(grade, subject) {
+  return leafTopics().filter((t) => (!grade || t.grade_level === grade) && (!subject || t.subject === subject));
+}
+
+function syncSelectorGroup(prefix, options = {}) {
+  const gradeEl = qs(prefix + "Grade");
+  const subjectEl = qs(prefix + "Subject");
+  if (!gradeEl || !subjectEl) return;
+  const grades = typeof options.getGrades === "function" ? options.getGrades() : getGrades();
+  const previousGrade = gradeEl.value;
+  const previousSubject = subjectEl.value;
+  initCascade(prefix, options);
+  if (!grades.length) return;
+  const autoSelectFirst = options.autoSelectFirst !== false;
+  const nextGrade = grades.includes(previousGrade) ? previousGrade : (autoSelectFirst ? grades[0] : "");
+  if (!nextGrade) return;
+  gradeEl.value = nextGrade;
+  if (typeof gradeEl.onchange === "function") gradeEl.onchange();
+  const subjects = typeof options.getSubjects === "function" ? options.getSubjects(nextGrade) : getSubjectsByGrade(nextGrade);
+  const nextSubject = subjects.includes(previousSubject) ? previousSubject : (autoSelectFirst && subjects.length ? subjects[0] : "");
+  if (!nextSubject) return;
+  subjectEl.value = nextSubject;
+  if (typeof subjectEl.onchange === "function") subjectEl.onchange();
+}
+
+function syncGenerateControls() {
+  const teacherGrades = getTeacherGrades();
+  const hasClassrooms = teacherGrades.length > 0;
+  const teacherScopeOptions = {
+    gradePlaceholder: teacherGrades.length ? "年级" : "请先创建班级",
+    getGrades: () => teacherGrades,
+  };
+  syncSelectorGroup("generate", { ...teacherScopeOptions, autoSelectFirst: false });
+  syncSelectorGroup("excelImport", teacherScopeOptions);
+  syncSelectorGroup("uploadDocument", teacherScopeOptions);
+  syncSelectorGroup("documentFilter", teacherScopeOptions);
+  syncSelectorGroup("docSearch", teacherScopeOptions);
+
+  ["generateGrade", "generateSubject", "generateTopicId", "generateCategory", "generateCount", "generateQuestionType"].forEach((id) => {
+    const el = qs(id);
+    if (el) el.disabled = !hasClassrooms;
+  });
+  ["excelImportGrade", "excelImportSubject", "excelFileInput", "downloadExcelTemplateButton", "importExcelButton"].forEach((id) => {
+    const el = qs(id);
+    if (el) el.disabled = !hasClassrooms;
+  });
+  ["uploadDocumentGrade", "uploadDocumentSubject", "uploadDocumentFile", "uploadDocumentDocType", "uploadDocumentButton", "docSearchGrade", "docSearchSubject", "docSearchStrategy", "searchDocsButton", "documentFilterGrade", "documentFilterSubject"].forEach((id) => {
+    const el = qs(id);
+    if (el) el.disabled = !hasClassrooms;
+  });
+
+  const hint = qs("generateGradeHint");
+  if (hint) {
+    hint.textContent = hasClassrooms
+      ? `当前可选年级来自你已创建的班级：${teacherGrades.join("、")}`
+      : "请先创建班级，系统会根据已有班级所属年级提供出题范围。";
+  }
+  const excelHint = qs("excelImportHint");
+  if (excelHint) {
+    excelHint.textContent = hasClassrooms
+      ? "先选择年级和学科，再下载对应 Excel 模板或上传已填写模板。"
+      : "请先创建班级，系统只会开放你所教班级对应年级的 Excel 导题模板。";
+  }
+  const generateButton = qs("generateQuestionsButton");
+  if (generateButton) generateButton.disabled = !hasClassrooms;
 }
 
 function initCascade(prefix, opts = {}) {
-  const subjectEl = qs(prefix + "Subject");
   const gradeEl = qs(prefix + "Grade");
+  const subjectEl = qs(prefix + "Subject");
   const topicEl = qs(prefix + "TopicId");
-  if (!subjectEl || !gradeEl || !topicEl) {
-    console.warn("initCascade skip:", prefix, !!subjectEl, !!gradeEl, !!topicEl);
+  if (!gradeEl || !subjectEl) {
+    console.warn("initCascade skip:", prefix, !!gradeEl, !!subjectEl, !!topicEl);
     return;
   }
 
-  const subjectPlaceholder = opts.subjectPlaceholder || "学科";
   const gradePlaceholder = opts.gradePlaceholder || "年级";
+  const subjectPlaceholder = opts.subjectPlaceholder || "学科";
   const topicPlaceholder = opts.topicPlaceholder || "知识点";
 
-  const subjects = getSubjects();
-  subjectEl.innerHTML = `<option value="">${subjectPlaceholder}</option>` +
-    subjects.map((s) => `<option value="${s}">${s}</option>`).join("");
-  gradeEl.innerHTML = `<option value="">${gradePlaceholder}</option>`;
-  topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>`;
-
-  subjectEl.onchange = () => {
-    const subject = subjectEl.value;
-    if (!subject) {
-      gradeEl.innerHTML = `<option value="">${gradePlaceholder}</option>`;
-      topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>`;
-      return;
-    }
-    const grades = getGradesBySubject(subject);
-    gradeEl.innerHTML = `<option value="">${gradePlaceholder}</option>` +
-      grades.map((g) => `<option value="${g}">${g}</option>`).join("");
-    const topics = getTopicsBySubjectAndGrade(subject, "");
-    topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>` +
-      topics.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
-  };
+  const grades = typeof opts.getGrades === "function" ? opts.getGrades() : getGrades();
+  gradeEl.innerHTML = `<option value="">${gradePlaceholder}</option>` +
+    grades.map((g) => `<option value="${g}">${g}</option>`).join("");
+  subjectEl.innerHTML = `<option value="">${subjectPlaceholder}</option>`;
+  if (topicEl) topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>`;
 
   gradeEl.onchange = () => {
-    const subject = subjectEl.value;
     const grade = gradeEl.value;
-    const topics = getTopicsBySubjectAndGrade(subject, grade);
-    topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>` +
-      topics.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+    if (!grade) {
+      subjectEl.innerHTML = `<option value="">${subjectPlaceholder}</option>`;
+      if (topicEl) topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>`;
+      return;
+    }
+    const subjects = typeof opts.getSubjects === "function" ? opts.getSubjects(grade) : getSubjectsByGrade(grade);
+    subjectEl.innerHTML = `<option value="">${subjectPlaceholder}</option>` +
+      subjects.map((s) => `<option value="${s}">${s}</option>`).join("");
+    if (topicEl) {
+      const topics = typeof opts.getTopics === "function" ? opts.getTopics(grade, "") : getTopicsByGradeAndSubject(grade, "");
+      topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>` +
+        topics.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+    }
+  };
+
+  subjectEl.onchange = () => {
+    const grade = gradeEl.value;
+    const subject = subjectEl.value;
+    if (topicEl) {
+      const topics = typeof opts.getTopics === "function" ? opts.getTopics(grade, subject) : getTopicsByGradeAndSubject(grade, subject);
+      topicEl.innerHTML = `<option value="">${topicPlaceholder}</option>` +
+        topics.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+    }
   };
 }
 
@@ -263,63 +403,176 @@ function renderTeacherDashboard(data) {
     </div>
   `;
 
-  renderStudentList(data);
+  renderPracticeAnalytics(data);
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "暂无";
+  return `${Math.round(Number(value) * 100)}%`;
 }
 
 function renderStudentList(data) {
-  const topicMap = {};
-  state.topics.forEach((t) => { topicMap[t.id] = t.name; });
-
-  qs("studentListHeader").innerHTML = `
-    <select id="studentSortSelect" style="width:auto;min-width:110px;padding:4px 8px;font-size:12px;">
-      <option value="name" ${state.studentSort === "name" ? "selected" : ""}>按姓名</option>
-      <option value="mastery" ${state.studentSort === "mastery" ? "selected" : ""}>按掌握度</option>
-      <option value="accuracy" ${state.studentSort === "accuracy" ? "selected" : ""}>按正确率</option>
-    </select>
-  `;
-
-  let students = [...(data.students || [])];
-  if (state.studentSort === "mastery") students.sort((a, b) => b.overall_mastery - a.overall_mastery);
-  else if (state.studentSort === "accuracy") students.sort((a, b) => b.recent_practice_accuracy - a.recent_practice_accuracy);
-  else students.sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh"));
+  state.studentPageData = data;
+  const keyword = (qs("studentSearchInput")?.value || "").trim().toLowerCase();
+  state.studentSearch = keyword;
+  const students = [...(data.students || [])].filter((item) => {
+    if (!keyword) return true;
+    return (item.name || "").toLowerCase().includes(keyword);
+  });
 
   if (!students.length) {
-    qs("teacherStudentsView").innerHTML = "<div class='empty-state'>暂无学生数据，创建班级后学生注册即可显示</div>";
+    qs("studentPageView").innerHTML = keyword
+      ? "<div class='empty-state'>没有匹配的学生</div>"
+      : "<div class='empty-state'>暂无学生数据，创建班级后学生注册即可显示</div>";
     return;
   }
 
-  qs("teacherStudentsView").innerHTML = students.map((item) => {
-    const masteryPct = (item.overall_mastery * 100).toFixed(0);
-    const accuracyPct = (item.recent_practice_accuracy * 100).toFixed(0);
-    const barClass = item.overall_mastery < 0.4 ? "progress-low" : item.overall_mastery < 0.7 ? "progress-mid" : "progress-high";
+  const groups = {};
+  students.forEach((item) => {
+    const key = `${item.grade_level || "未分年级"}|${item.classroom_name || "未分班"}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(item);
+  });
+
+  const sortedKeys = Object.keys(groups).sort((a, b) => {
+    const [gradeA, classA] = a.split("|");
+    const [gradeB, classB] = b.split("|");
+    const gradeRank = sortGrades([gradeA, gradeB]);
+    if (gradeRank[0] !== gradeRank[1]) {
+      return gradeRank[0] === gradeA ? -1 : 1;
+    }
+    return classA.localeCompare(classB, "zh");
+  });
+
+  qs("studentPageView").innerHTML = sortedKeys.map((key) => {
+    const [grade, classroom] = key.split("|");
+    const group = groups[key];
+    const avgMastery = group.reduce((s, i) => s + (i.overall_mastery || 0), 0) / group.length;
+    const avgAccuracy = group.reduce((s, i) => s + (i.recent_practice_accuracy || 0), 0) / group.length;
+    const masteryPct = (avgMastery * 100).toFixed(0);
+    const accuracyPct = (avgAccuracy * 100).toFixed(0);
+    const barClass = avgMastery < 0.4 ? "progress-low" : avgMastery < 0.7 ? "progress-mid" : "progress-high";
+    const collapsed = !keyword && !!state.collapsedStudentGroups[key];
     return `
-      <div class="student-card" data-student-name="${item.name || ""}">
-        <div class="student-left">
-          <div class="student-name">${item.name || "未命名"}</div>
-          <div class="student-meta">${item.grade_level || "-"} · ${topicMap[item.target_topic_id] || item.target_topic_id || "-"}</div>
-        </div>
-        <div class="student-right">
-          <div class="student-stat">
-            <div class="student-stat-value" style="color:${item.overall_mastery < 0.4 ? "#d54941" : item.overall_mastery < 0.7 ? "#f7a440" : "#2ba471"}">${masteryPct}%</div>
-            <div class="student-stat-label">掌握度</div>
+      <section class="class-group-card">
+        <div class="class-group-head">
+          <div>
+            <div class="class-group-title">${grade} · ${classroom}</div>
+            <div class="class-group-meta">
+              <span>👤 ${group.length} 人</span>
+              <span>📊 掌握度 ${masteryPct}%</span>
+              <span>🎯 正确率 ${accuracyPct}%</span>
+            </div>
           </div>
-          <div class="progress-bar-wrap"><div class="progress-bar-fill ${barClass}" style="width:${masteryPct}%"></div></div>
-          <div class="student-stat">
-            <div class="student-stat-value" style="color:#8b5cf6">${accuracyPct}%</div>
-            <div class="student-stat-label">正确率</div>
+          <div class="class-group-actions">
+            <button class="btn btn-ghost btn-sm student-group-toggle" data-group-key="${key}">
+              ${collapsed ? "展开学生" : "收起学生"}
+            </button>
+            <div class="class-group-badge">班级视图</div>
           </div>
         </div>
-      </div>
+        <div class="progress-bar-wrap" style="margin-top:8px;"><div class="progress-bar-fill ${barClass}" style="width:${masteryPct}%"></div></div>
+        <div class="student-inline-list" style="${collapsed ? "display:none;" : ""}">
+          ${group.sort((a, b) => (a.name || "").localeCompare(b.name || "", "zh")).map((item) => `
+            <article class="student-inline-card" data-student-id="${item.student_profile_id}">
+              <div class="student-inline-main">
+                <div class="student-inline-top">
+                  <div>
+                    <div class="student-inline-name">${item.name || "未命名"}</div>
+                    <div class="student-inline-meta">${item.grade_level || "未分年级"} · ${item.classroom_name || "未分班"}${item.latest_report_at ? ` · 最近报告 ${formatDateTime(item.latest_report_at)}` : ""}</div>
+                  </div>
+                  <div class="student-inline-stats">
+                    <div class="student-inline-stat">
+                      <strong>${formatPercent(item.overall_mastery)}</strong>
+                      <span>掌握度</span>
+                    </div>
+                    <div class="student-inline-stat">
+                      <strong>${formatPercent(item.recent_practice_accuracy)}</strong>
+                      <span>正确率</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="student-inline-footer">点击查看各科学习掌握度</div>
+              </div>
+            </article>
+          `).join("")}
+        </div>
+      </section>
     `;
   }).join("");
 
-  qs("studentSortSelect").addEventListener("change", () => {
-    state.studentSort = qs("studentSortSelect").value;
-    renderStudentList(state.dashboardData);
+  const studentMap = new Map(students.map((item) => [String(item.student_profile_id), item]));
+  qs("studentPageView").querySelectorAll(".student-inline-card[data-student-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const student = studentMap.get(card.dataset.studentId);
+      if (student) openStudentDrawer(student);
+    });
+  });
+  qs("studentPageView").querySelectorAll(".student-group-toggle[data-group-key]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.groupKey;
+      state.collapsedStudentGroups[key] = !state.collapsedStudentGroups[key];
+      renderStudentList(state.studentPageData || { students: [] });
+    });
   });
 }
 
+function openStudentDrawer(student) {
+  qs("studentDrawerTitle").textContent = student.name || "学生详情";
+  const summaries = student.subject_summaries || [];
+  qs("studentDrawerBody").innerHTML = `
+    <div class="drawer-student-overview">
+      <div class="drawer-student-overview-main">
+        <div class="drawer-student-name">${student.name || "未命名"}</div>
+        <div class="drawer-student-subject">${student.grade_level || "未分年级"} · ${student.classroom_name || "未分班"}${student.latest_report_at ? ` · 最近报告 ${formatDateTime(student.latest_report_at)}` : ""}</div>
+      </div>
+      <div class="drawer-student-right">
+        <div class="drawer-stat">
+          <div class="drawer-stat-value">${formatPercent(student.overall_mastery)}</div>
+          <div class="drawer-stat-label">整体掌握度</div>
+        </div>
+        <div class="drawer-stat">
+          <div class="drawer-stat-value" style="color:#8b5cf6">${formatPercent(student.recent_practice_accuracy)}</div>
+          <div class="drawer-stat-label">整体正确率</div>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-section-title">各科学习情况</div>
+    <div class="drawer-subject-list">
+      ${summaries.length ? summaries.map((item) => `
+        <div class="drawer-subject-card">
+          <div class="drawer-subject-head">
+            <strong>${item.subject}</strong>
+            <span>${item.practice_count ? `${item.practice_count} 次练习` : "暂无练习"}</span>
+          </div>
+          <div class="drawer-subject-metrics">
+            <span>掌握度 ${formatPercent(item.mastery)}</span>
+            <span>正确率 ${formatPercent(item.accuracy)}</span>
+          </div>
+        </div>
+      `).join("") : `<div class="empty-state">暂无学科练习数据</div>`}
+    </div>
+  `;
+
+  qs("studentDrawerOverlay").classList.add("open");
+  qs("studentDrawerPanel").classList.add("open");
+}
+
+function closeStudentDrawer() {
+  qs("studentDrawerOverlay").classList.remove("open");
+  qs("studentDrawerPanel").classList.remove("open");
+}
+
 function renderPracticeAnalytics(data) {
+  if (!data || typeof data.total_attempts === "undefined") {
+    qs("practiceAnalyticsView").innerHTML = `<div class="kpi-grid" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="kpi-card kpi-blue"><div class="kpi-icon">📝</div><div><div class="kpi-value">0</div><div class="kpi-label">总练习数</div></div></div>
+      <div class="kpi-card kpi-green"><div class="kpi-icon">✅</div><div><div class="kpi-value">0</div><div class="kpi-label">总正确数</div></div></div>
+      <div class="kpi-card kpi-purple"><div class="kpi-icon">🎯</div><div><div class="kpi-value">0%</div><div class="kpi-label">整体正确率</div></div></div>
+    </div>
+    <div class="empty-state">暂无练习记录，学生完成练习后即可查看分析</div>`;
+    return;
+  }
   state.analyticsData = data;
   const accuracyPct = (data.accuracy * 100).toFixed(0);
 
@@ -360,19 +613,80 @@ function renderPracticeAnalytics(data) {
 }
 
 function renderQuestionBank(items) {
-  const topicMap = {};
-  state.topics.forEach((t) => { topicMap[t.id] = t.name; });
-  qs("questionBankView").innerHTML = items.length ? `<table class="q-table"><thead><tr><th>知识点</th><th>题目</th><th>答案</th><th>解析</th><th>类型</th><th>难度</th><th>来源</th></tr></thead><tbody>${items.map((item) => `
-    <tr>
-      <td class="q-topic">${topicMap[item.topic_id] || item.topic_id}</td>
-      <td class="q-stem">${item.stem}${renderQuestionPreview(item)}</td>
-      <td class="q-answer">${item.answer}</td>
-      <td class="q-explain">${item.explanation || "-"}</td>
-      <td>${friendlyQuestionType(item.question_type)}</td>
-      <td>${friendlyDifficulty(item.difficulty)}</td>
-      <td>${friendlySource(item.source)}</td>
-    </tr>
-  `).join("")}</tbody></table>` : "<div class='empty-state'>题库为空</div>";
+  state.qbItems = items;
+  const subjects = [...new Set(items.map((item) => item.subject).filter(Boolean))].sort();
+  const grades = sortGrades([...new Set(items.map((item) => item.grade_level).filter(Boolean))]);
+
+  qs("qbTabs").innerHTML = ["全部", ...subjects].map((s) => {
+    const val = s === "全部" ? "" : s;
+    const active = state.qbSubject === val ? "active" : "";
+    const count = s === "全部" ? items.length : items.filter((i) => i.subject === s).length;
+    return `<button class="qb-tab ${active}" data-qb-subject="${val}">${s}（${count}）</button>`;
+  }).join("");
+
+  qs("qbGradeFilter").innerHTML = "<option value=''>全部年级</option>" + grades.map((g) => `<option value="${g}" ${state.qbGrade === g ? "selected" : ""}>${g}</option>`).join("");
+  qs("qbTypeFilter").value = state.qbType;
+  qs("qbStatusFilter").value = state.qbStatus;
+  qs("qbSearchInput").value = state.qbSearch;
+
+  qs("qbTabs").querySelectorAll("[data-qb-subject]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state.qbSubject = btn.dataset.qbSubject;
+      renderQuestionBank(state.qbItems);
+    });
+  });
+
+  let filtered = items;
+  if (state.qbSubject) filtered = filtered.filter((i) => i.subject === state.qbSubject);
+  if (state.qbGrade) filtered = filtered.filter((i) => i.grade_level === state.qbGrade);
+  if (state.qbType) filtered = filtered.filter((i) => i.question_type === state.qbType);
+  if (state.qbStatus) filtered = filtered.filter((i) => i.status === state.qbStatus);
+  if (state.qbSearch) {
+    const kw = state.qbSearch.toLowerCase();
+    filtered = filtered.filter((i) => (i.stem || "").toLowerCase().includes(kw) || (i.answer || "").toLowerCase().includes(kw));
+  }
+
+  const approvedCount = filtered.filter((i) => i.status === "approved").length;
+  const pendingCount = filtered.filter((i) => i.status === "pending").length;
+  qs("qbStatsBar").innerHTML = `共 <strong>${filtered.length}</strong> 题 · 已审核 <strong>${approvedCount}</strong> · 待审核 <strong>${pendingCount}</strong>`;
+
+  if (!filtered.length) {
+    qs("questionBankView").innerHTML = "<div class='qb-empty'>暂无题目，可通过 AI 生成或 Excel 导入添加</div>";
+    return;
+  }
+
+  qs("questionBankView").innerHTML = filtered.map((item) => {
+    const topicName = item.knowledge_l2_name || item.topic_name || item.topic_id;
+    const parentName = item.knowledge_l1_name || "";
+    const subjectLabel = [item.grade_level, item.subject, topicName].filter(Boolean).join(" · ");
+    const statusBadge = item.status === "approved" ? "badge-approved" : item.status === "pending" ? "badge-pending" : "badge-rejected";
+    const statusText = item.status === "approved" ? "已审核" : item.status === "pending" ? "待审核" : "已拒绝";
+    const diffLevel = item.difficulty_level || (item.difficulty < 0.3 ? 1 : item.difficulty < 0.5 ? 2 : item.difficulty < 0.7 ? 3 : item.difficulty < 0.85 ? 4 : 5);
+    const diffBadge = diffLevel <= 2 ? "badge-low" : diffLevel <= 3 ? "badge-mid" : "badge-high";
+    const diffText = diffLevel <= 2 ? "基础概念" : diffLevel <= 3 ? "常规" : "综合";
+    const tagsHtml = (item.tags || []).map((t) => `<span class="badge">${t}</span>`).join("");
+
+    return `
+      <div class="qb-card">
+        <div class="qb-card-head">
+          <div>
+            <div class="qb-card-topic">${subjectLabel || "未分类题目"}</div>
+            ${parentName ? `<div class="qb-card-topic-path">一级知识点：${parentName}</div>` : ""}
+          </div>
+          <div class="qb-card-badges">
+            <span class="badge ${statusBadge}">${statusText}</span>
+            <span class="badge ${diffBadge}">${diffText}</span>
+            <span class="badge badge-type">${friendlyQuestionType(item.question_type)}</span>
+            ${item.source ? `<span class="badge badge-source">${friendlySource(item.source)}</span>` : ""}
+          </div>
+        </div>
+        <div class="qb-card-stem">${item.stem || ""}${renderQuestionPreview(item)}</div>
+        <div class="qb-card-answer">答案：${item.answer || "-"}</div>
+        ${item.explanation ? `<div class="qb-card-explain">解析：${item.explanation}</div>` : ""}
+        ${tagsHtml ? `<div class="qb-card-tags">${tagsHtml}</div>` : ""}
+      </div>
+    `;
+  }).join("");
 }
 
 function renderPendingQuestions(items) {
@@ -381,13 +695,11 @@ function renderPendingQuestions(items) {
     qs("pendingQuestionsView").innerHTML = "<div class='empty-state'>暂无待审核题目 🎉</div>";
     return;
   }
-  const topicMap = {};
-  state.topics.forEach((t) => { topicMap[t.id] = t.name; });
   qs("pendingQuestionsView").innerHTML = items.map((item) => `
     <div class="timeline-item" data-question-id="${item.id}" style="display:flex;gap:10px;align-items:flex-start;">
       <input type="checkbox" class="pending-checkbox" data-id="${item.id}" style="margin-top:4px;width:18px;height:18px;cursor:pointer;flex-shrink:0;">
       <div style="flex:1;">
-        <strong>[${topicMap[item.topic_id] || item.topic_id}] ${item.stem}</strong>
+        <strong>[${item.knowledge_l2_name || item.topic_name || item.topic_id}] ${item.stem}</strong>
         ${renderQuestionPreview(item)}
         <div>答案：${item.answer}</div>
         <div>解析：${item.explanation}</div>
@@ -475,66 +787,73 @@ function topicName(topicId) {
   return state.topics.find((topic) => topic.id === topicId)?.name || topicId || "全部知识点";
 }
 
-function renderRagOverview() {
-  const docs = state.documents || [];
+function renderRagOverview(docs = state.documents || []) {
   const docCount = docs.length;
   const chunkCount = docs.reduce((sum, item) => sum + (item.chunk_count || 0), 0);
   const readyCount = docs.reduce((sum, item) => sum + (item.embedding_ready_count || 0), 0);
   const recent = docs[0];
-  const run = state.retrievalRun;
+  const scopeGrade = qs("documentFilterGrade")?.value || "全部年级";
+  const scopeSubject = qs("documentFilterSubject")?.value || "全部学科";
+  const recentText = recent
+    ? `${recent.title} · ${friendlyDocType(recent.doc_type)} · ${formatDateTime(recent.created_at)}`
+    : "还没有导入资料，先上传一份讲义或题解。";
+  const recentTitle = recentText.replace(/"/g, "&quot;");
   qs("ragOverviewView").innerHTML = `
-    <div class="rag-stat-grid">
-      <div class="stat-card"><strong>资料总数</strong><div>${docCount}</div></div>
-      <div class="stat-card"><strong>片段数量</strong><div>${chunkCount}</div></div>
-      <div class="stat-card"><strong>已向量化</strong><div>${readyCount}/${chunkCount || 0}</div></div>
-      <div class="stat-card"><strong>评测命中</strong><div>${run ? `${Math.round(run.hit_at_1 * 100)}%` : "未运行"}</div></div>
-    </div>
-    <div class="helper-card rag-overview-note">
-      <strong>最近资料</strong>
-      <p>${recent ? `${recent.title} · ${friendlyDocType(recent.doc_type)} · ${formatDateTime(recent.created_at)}` : "还没有导入资料，先上传一份讲义或题解。"}</p>
+    <div class="rag-overview-strip">
+      <div class="rag-stat-inline">
+        <span class="rag-stat-chip"><strong>资料总数</strong><em>${docCount}</em></span>
+        <span class="rag-stat-chip"><strong>片段数量</strong><em>${chunkCount}</em></span>
+        <span class="rag-stat-chip"><strong>已向量化</strong><em>${readyCount}/${chunkCount || 0}</em></span>
+        <span class="rag-stat-chip"><strong>当前范围</strong><em>${scopeGrade} · ${scopeSubject}</em></span>
+      </div>
+      <div class="rag-overview-latest" title="${recentTitle}">
+        <strong>最近资料</strong>
+        <span>${recentText}</span>
+      </div>
     </div>
   `;
 }
 
 function renderDocumentLibrary() {
-  const topicFilter = qs("documentFilterTopicId").value;
-  const typeFilter = qs("documentFilterDocType").value;
+  const typeFilter = qs("documentFilterDocType")?.value || "";
   const docs = (state.documents || []).filter((item) => {
-    const topicOk = !topicFilter || item.topic_id === topicFilter;
     const typeOk = !typeFilter || item.doc_type === typeFilter;
-    return topicOk && typeOk;
+    return typeOk;
   });
-  qs("documentLibraryView").innerHTML = docs.length ? docs.map((item) => {
+  if (!docs.length) {
+    qs("documentLibraryView").innerHTML = "<div class='empty-state'>当前年级学科下暂无资料</div>";
+    renderRagOverview(docs);
+    return;
+  }
+  qs("documentLibraryView").innerHTML = docs.map((item) => {
     const ready = item.embedding_ready_count || 0;
     const total = item.chunk_count || 0;
-    const preview = (item.chunk_previews || []).map((chunk) => `
-      <details class="chunk-preview">
-        <summary>片段 ${chunk.chunk_index + 1} · ${chunk.embedding_ready ? "已向量化" : "未向量化"}</summary>
-        <div>${chunk.content}</div>
-      </details>
-    `).join("");
+    const iconMap = { textbook: "📕", handout: "📝", solution: "💡", reference: "📋" };
+    const icon = iconMap[item.doc_type] || "📄";
+    const indexStatus = ready >= total && total > 0 ? "badge-approved" : "badge-pending";
+    const indexText = ready >= total && total > 0 ? "已索引" : `${ready}/${total}`;
     return `
-      <article class="timeline-item document-item" data-document-id="${item.id}">
-        <div class="document-row-top">
-          <div>
-            <strong>${item.title}</strong>
-            <div>${friendlyDocType(item.doc_type)} · ${topicName(item.topic_id)} · ${item.source_name}</div>
-            <small>${formatDateTime(item.created_at)} · 索引 ${ready}/${total}</small>
-          </div>
-          ${item.can_delete
-            ? `<button class="ghost-button delete-document-button" data-document-id="${item.id}">删除</button>`
-            : `<span class="badge">共享资料</span>`}
+      <div class="doc-card" data-document-id="${item.id}">
+        <div class="doc-card-icon">${icon}</div>
+        <div class="doc-card-info">
+          <div class="doc-card-title">${item.title}</div>
+          <div class="doc-card-meta">${item.grade_level || "未绑定年级"} · ${item.subject || "未绑定学科"} · ${friendlyDocType(item.doc_type)}</div>
+          <div class="doc-card-meta">${item.source_name || "-"}</div>
+          <div class="doc-card-meta">${formatDateTime(item.created_at)} · <span class="badge ${indexStatus}">${indexText}</span></div>
         </div>
-        <div class="document-preview">${item.content_preview || "暂无预览"}</div>
-        ${preview}
-      </article>
+        <div class="doc-card-actions">
+          ${item.can_delete
+            ? `<button class="btn btn-danger btn-sm delete-document-button" data-document-id="${item.id}">删除</button>`
+            : `<span class="badge badge-source">共享</span>`}
+        </div>
+      </div>
     `;
-  }).join("") : "<div class='empty-state'>暂无符合筛选条件的资料</div>";
+  }).join("");
 
   qs("documentLibraryView").querySelectorAll(".delete-document-button").forEach((button) => {
     button.addEventListener("click", () => deleteDocument(Number(button.dataset.documentId)).catch(handleError));
   });
-  renderRagOverview();
+  renderRagOverview(docs);
 }
 
 function renderDocumentSearch(items) {
@@ -542,7 +861,7 @@ function renderDocumentSearch(items) {
     <div class="timeline-item search-hit-card">
       <strong>${item.document_title}</strong>
       <div>${item.snippet}</div>
-      <small>${friendlyDocType(item.doc_type)} · ${item.source_name} · 相关度 ${Number(item.score).toFixed(3)}</small>
+      <small>${item.grade_level || "未绑定年级"} · ${item.subject || "未绑定学科"} · ${friendlyDocType(item.doc_type)} · ${item.source_name} · 相关度 ${Number(item.score).toFixed(3)}</small>
       <div class="score-breakdown-line">
         <span>关键词 ${Number(item.lexical_score || 0).toFixed(3)}</span>
         <span>向量 ${Number(item.vector_score || 0).toFixed(3)}</span>
@@ -553,69 +872,18 @@ function renderDocumentSearch(items) {
   `).join("") : "<div class='empty-state'>没有搜索到相关内容</div>";
 }
 
-function renderDirectoryImport(data) {
-  qs("directoryImportView").innerHTML = data.files.length ? data.files.map((item) => `
-    <div class="timeline-item">
-      <strong>${item.title}</strong>
-      <div>${item.file_path}</div>
-      <small>${friendlyDocType(item.doc_type)} · ${item.imported ? "✅ 已导入" : `⏭️ 跳过：${item.reason}`}</small>
-    </div>
-  `).join("") : "<div class='empty-state'>没有导入记录</div>";
+function syncSearchHelpVisibility() {
+  const fab = qs("searchStrategyHelpFab");
+  const modal = qs("searchStrategyHelpModal");
+  if (!fab || !modal) return;
+  const visible = state.activePage === "documents" && state.activeRagTab === "search";
+  fab.style.display = visible ? "flex" : "none";
+  if (!visible) modal.classList.remove("show");
 }
 
-function renderRetrievalEvaluation(data) {
-  qs("retrievalEvaluationView").innerHTML = `
-    <div class="summary-block">
-      <div class="stat-card"><strong>最优搜索方式</strong><div>${friendlyStrategy(data.best_strategy)}</div></div>
-      <div class="timeline">
-        ${data.strategies.map((item) => `<div class="timeline-item"><strong>${friendlyStrategy(item.strategy)}</strong><div>命中首位 ${item.hit_at_1 ? "✅" : "❌"} · 命中前三 ${item.hit_at_3 ? "✅" : "❌"} · MRR ${item.mrr.toFixed(2)}</div></div>`).join("")}
-      </div>
-    </div>
-  `;
-}
-
-function renderRetrievalCases() {
-  qs("retrievalCaseListView").innerHTML = state.retrievalCases.length ? state.retrievalCases.map((item) => `
-    <div class="timeline-item retrieval-case-item">
-      <div class="document-row-top">
-        <div>
-          <strong>${item.label}</strong>
-          <div>${item.query}</div>
-          <small>${topicName(item.expected_topic_id)} · ${friendlyDocType(item.expected_doc_type)} · ${formatDateTime(item.created_at)}</small>
-        </div>
-        <button class="ghost-button delete-case-button" data-case-id="${item.id}">删除</button>
-      </div>
-    </div>
-  `).join("") : "<div class='empty-state'>暂无评测题</div>";
-
-  qs("retrievalCaseListView").querySelectorAll(".delete-case-button").forEach((button) => {
-    button.addEventListener("click", () => deleteRetrievalCase(Number(button.dataset.caseId)).catch(handleError));
-  });
-}
-
-function renderRetrievalCaseRun(data) {
-  state.retrievalRun = data;
-  renderRagOverview();
-  qs("retrievalEvaluationView").innerHTML = data.total_cases ? `
-    <div class="summary-block">
-      <div class="report-grid">
-        <div class="stat-card"><strong>评测题数</strong><div>${data.total_cases}</div></div>
-        <div class="stat-card"><strong>Hit@1</strong><div>${Math.round(data.hit_at_1 * 100)}%</div></div>
-        <div class="stat-card"><strong>Hit@3</strong><div>${Math.round(data.hit_at_3 * 100)}%</div></div>
-        <div class="stat-card"><strong>MRR</strong><div>${Number(data.mrr).toFixed(2)}</div></div>
-      </div>
-      <div class="timeline">
-        ${data.cases.map((item) => {
-          const best = item.strategies.find((strategy) => strategy.strategy === item.best_strategy) || item.strategies[0];
-          return `<div class="timeline-item">
-            <strong>${item.label}</strong>
-            <div>${item.query}</div>
-            <small>最优 ${friendlyStrategy(item.best_strategy)} · Hit@1 ${best?.hit_at_1 ? "是" : "否"} · Hit@3 ${best?.hit_at_3 ? "是" : "否"} · MRR ${Number(best?.mrr || 0).toFixed(2)}</small>
-          </div>`;
-        }).join("")}
-      </div>
-    </div>
-  ` : "<div class='empty-state'>还没有评测题，先添加一条固定问题。</div>";
+function toggleSearchHelp() {
+  const modal = qs("searchStrategyHelpModal");
+  if (modal) modal.classList.toggle("show");
 }
 
 async function loadTopics() {
@@ -625,13 +893,8 @@ async function loadTopics() {
     console.error("loadTopics failed:", e);
     state.topics = [];
   }
-  console.log("topics loaded:", state.topics.length, "subjects:", getSubjects());
-  initCascade("generate");
-  initCascade("uploadDocument");
-  initCascade("documentFilter");
-  initCascade("docSearch");
-  initCascade("case");
-  initCascade("eval");
+  console.log("topics loaded:", state.topics.length, "grades:", getGrades());
+  syncGenerateControls();
 }
 
 async function loadSchools() {
@@ -702,12 +965,13 @@ async function login() {
     await loadTopics();
     await loadSchools();
     await loadTeacherDashboard();
+    await loadStudentPage();
     await loadClassrooms();
     await loadQuestionBank();
     await loadPendingQuestions();
     await loadPracticeReviews();
     await loadDocuments();
-    await loadRetrievalCases();
+    syncSearchHelpVisibility();
   } catch (err) {
     showToast(`登录失败: ${err.message}`);
   }
@@ -735,6 +999,17 @@ async function loadTeacherDashboard() {
   }
 }
 
+async function loadStudentPage() {
+  qs("studentPageView").innerHTML = '<div class="empty-state"><span class="spinner"></span> 加载中...</div>';
+  try {
+    const dashboard = await api("/teacher/dashboard");
+    state.studentPageData = dashboard;
+    renderStudentList(dashboard);
+  } catch (e) {
+    qs("studentPageView").innerHTML = '<div class="empty-state">加载失败</div>';
+  }
+}
+
 async function loadQuestionBank() {
   const items = await api("/teacher/question-bank");
   renderQuestionBank(items);
@@ -754,19 +1029,73 @@ async function loadPracticeReviews() {
 }
 
 async function loadDocuments() {
-  state.documents = await api("/teacher/documents");
+  const grade = qs("documentFilterGrade")?.value || "";
+  const subject = qs("documentFilterSubject")?.value || "";
+  if (!grade || !subject) {
+    state.documents = [];
+    renderDocumentLibrary();
+    return;
+  }
+  const query = new URLSearchParams({ grade_level: grade, subject });
+  state.documents = await api(`/teacher/documents?${query.toString()}`);
   renderDocumentLibrary();
+}
+
+function onFileSelected() {
+  const input = qs("uploadDocumentFile");
+  const dropZone = qs("dropZone");
+  if (!input || !dropZone) return;
+  if (input.files && input.files.length) {
+    const file = input.files[0];
+    const sizeKB = (file.size / 1024).toFixed(1);
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    const sizeText = file.size > 1024 * 1024 ? `${sizeMB} MB` : `${sizeKB} KB`;
+    dropZone.classList.add("has-file");
+    dropZone.innerHTML = `
+      <div class="drop-zone-icon">📄</div>
+      <div><strong>${escapeHtml(file.name)}</strong> (${sizeText})</div>
+      <div style="font-size:12px;color:#8f959e;margin-top:4px;">点击重新选择</div>
+      <input id="uploadDocumentFile" type="file" accept=".txt,.md,.markdown,.pdf,.docx" style="display:none;">
+    `;
+    const newInput = dropZone.querySelector("#uploadDocumentFile");
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    newInput.files = dt.files;
+    newInput.addEventListener("change", onFileSelected);
+  }
+}
+
+function resetDropZone() {
+  const dropZone = qs("dropZone");
+  if (!dropZone) return;
+  dropZone.classList.remove("has-file");
+  dropZone.innerHTML = `
+    <div class="drop-zone-icon">📂</div>
+    <div>拖拽文件到此处，或点击选择</div>
+    <input id="uploadDocumentFile" type="file" accept=".txt,.md,.markdown,.pdf,.docx" style="display:none;">
+  `;
+  const newInput = dropZone.querySelector("#uploadDocumentFile");
+  if (newInput) newInput.addEventListener("change", onFileSelected);
 }
 
 async function uploadDocument() {
   const fileInput = qs("uploadDocumentFile");
+  const resultEl = qs("uploadDocumentResult");
+  if (resultEl) resultEl.innerHTML = "";
   if (!fileInput.files || !fileInput.files.length) {
     showToast("请先选择文件");
     return;
   }
+  const grade = qs("uploadDocumentGrade").value;
+  const subject = qs("uploadDocumentSubject").value;
+  if (!grade || !subject) {
+    showToast("请先选择年级和学科");
+    return;
+  }
   const form = new FormData();
   form.append("file", fileInput.files[0]);
-  form.append("topic_id", qs("uploadDocumentTopicId").value || "");
+  form.append("grade_level", grade);
+  form.append("subject", subject);
   form.append("doc_type", qs("uploadDocumentDocType").value || "reference");
   form.append("title", qs("uploadDocumentTitle").value || "");
   form.append("source_name", qs("uploadDocumentSource").value || "");
@@ -775,11 +1104,38 @@ async function uploadDocument() {
   qs("uploadDocumentButton").textContent = "上传中...";
   try {
     const document = await api("/teacher/documents/upload", { method: "POST", body: form });
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="helper-card">
+          <strong>资料上传成功</strong>
+          <p>《${escapeHtml(document.title)}》已完成上传和索引。</p>
+          <p>范围：${escapeHtml(document.grade_level || grade)} · ${escapeHtml(document.subject || subject)} · ${escapeHtml(friendlyDocType(document.doc_type))}</p>
+        </div>
+      `;
+    }
     showToast(`已上传：${document.title}`);
-    fileInput.value = "";
+    resetDropZone();
     qs("uploadDocumentTitle").value = "";
     qs("uploadDocumentSource").value = "";
+    const filterGrade = qs("documentFilterGrade");
+    const filterSubject = qs("documentFilterSubject");
+    if (filterGrade && filterSubject) {
+      filterGrade.value = grade;
+      if (typeof filterGrade.onchange === "function") filterGrade.onchange();
+      filterSubject.value = subject;
+      if (typeof filterSubject.onchange === "function") filterSubject.onchange();
+    }
     await loadDocuments();
+  } catch (error) {
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="helper-card">
+          <strong>资料上传失败</strong>
+          <p>${escapeHtml(error.message)}</p>
+        </div>
+      `;
+    }
+    showToast(error.message);
   } finally {
     qs("uploadDocumentButton").disabled = false;
     qs("uploadDocumentButton").textContent = "上传并索引";
@@ -792,63 +1148,27 @@ async function deleteDocument(documentId) {
   await loadDocuments();
 }
 
-async function loadRetrievalCases() {
-  state.retrievalCases = await api("/teacher/retrieval-cases");
-  renderRetrievalCases();
-}
-
-async function addRetrievalCase() {
-  const label = qs("caseLabelInput").value.trim();
-  const query = qs("caseQueryInput").value.trim();
-  if (!label || !query) {
-    showToast("请填写用例名称和测试问题");
+async function generateQuestions() {
+  if (!getTeacherGrades().length) {
+    showToast("请先创建班级后再生成题目");
     return;
   }
-  await api("/teacher/retrieval-cases", {
-    method: "POST",
-    body: JSON.stringify({
-      label,
-      query,
-      expected_topic_id: qs("caseTopicId").value || null,
-      expected_doc_type: qs("caseDocType").value || null,
-    }),
-  });
-  qs("caseLabelInput").value = "";
-  qs("caseQueryInput").value = "";
-  showToast("评测题已添加");
-  await loadRetrievalCases();
-}
-
-async function deleteRetrievalCase(caseId) {
-  await api(`/teacher/retrieval-cases/${caseId}`, { method: "DELETE" });
-  showToast("评测题已删除");
-  await loadRetrievalCases();
-}
-
-async function runRetrievalCases() {
-  const result = await api("/teacher/retrieval-cases/run", { method: "POST" });
-  renderRetrievalCaseRun(result);
-  showToast("评测集已运行");
-}
-
-async function generateQuestions() {
-  const manualTopic = qs("generateTopicManual").value.trim();
   const selectedTopic = qs("generateTopicId").value;
-  const topicId = manualTopic || selectedTopic;
+  const topicId = selectedTopic;
 
   if (!topicId) {
-    showToast("请选择或输入知识点");
+    showToast("请选择知识点");
     return;
   }
 
   const count = parseInt(qs("generateCount").value) || 5;
-  const difficulty = qs("generateDifficulty").value;
+  const category = qs("generateCategory").value;
   const questionType = qs("generateQuestionType").value;
   const includeExplanation = qs("toggleExplanation").classList.contains("on");
   const includeAnswerSheet = qs("toggleAnswerSheet").classList.contains("on");
 
-  const diffMap = { low: [1, 2], medium: [2, 4], high: [4, 5] };
-  const [diffMin, diffMax] = diffMap[difficulty] || diffMap.medium;
+  const diffMap = { basic: [1, 2], regular: [2, 4], comprehensive: [4, 5] };
+  const [diffMin, diffMax] = diffMap[category] || diffMap.regular;
   const topic = state.topics.find((item) => item.id === topicId);
   const parentL1Id = topic?.parent_id || null;
 
@@ -879,62 +1199,6 @@ async function generateQuestions() {
     qs("generateQuestionsButton").disabled = false;
     qs("generateQuestionsButton").innerHTML = '🤖 开始生成';
   }
-}
-
-function saveGenerateTemplate() {
-  const name = window.prompt("请输入模板名称", `${qs("generateSubject").value || "通用"}-${qs("generateDifficulty").value}`);
-  if (!name) return;
-  const template = {
-    name,
-    subject: qs("generateSubject").value,
-    grade: qs("generateGrade").value,
-    topicId: qs("generateTopicId").value,
-    difficulty: qs("generateDifficulty").value,
-    count: qs("generateCount").value,
-    questionType: qs("generateQuestionType").value,
-    includeExplanation: qs("toggleExplanation").classList.contains("on"),
-    includeAnswerSheet: qs("toggleAnswerSheet").classList.contains("on"),
-  };
-  state.generateTemplates.push(template);
-  localStorage.setItem("zhuyu_generate_templates", JSON.stringify(state.generateTemplates));
-  refreshTemplateSelect();
-  showToast("模板已保存");
-}
-
-function applyGenerateTemplate() {
-  const idx = qs("templateSelect").value;
-  if (!idx) return;
-  const template = state.generateTemplates[parseInt(idx)];
-  if (!template) return;
-  if (template.subject) qs("generateSubject").value = template.subject;
-  if (template.grade) qs("generateGrade").value = template.grade;
-  if (template.topicId) qs("generateTopicId").value = template.topicId;
-  qs("generateDifficulty").value = template.difficulty || "medium";
-  qs("generateCount").value = template.count || 5;
-  qs("generateQuestionType").value = template.questionType || "blank";
-  qs("toggleExplanation").classList.toggle("on", template.includeExplanation !== false);
-  qs("toggleAnswerSheet").classList.toggle("on", !!template.includeAnswerSheet);
-  showToast("模板已应用");
-}
-
-function deleteGenerateTemplate() {
-  const idx = qs("templateSelect").value;
-  if (!idx) return;
-  state.generateTemplates.splice(parseInt(idx), 1);
-  localStorage.setItem("zhuyu_generate_templates", JSON.stringify(state.generateTemplates));
-  refreshTemplateSelect();
-  showToast("模板已删除");
-}
-
-function refreshTemplateSelect() {
-  const section = qs("templateSection");
-  const select = qs("templateSelect");
-  if (!state.generateTemplates.length) {
-    section.style.display = "none";
-    return;
-  }
-  section.style.display = "";
-  select.innerHTML = "<option value=''>选择模板...</option>" + state.generateTemplates.map((t, i) => `<option value="${i}">${t.name}</option>`).join("");
 }
 
 async function reviewQuestion(questionId, action) {
@@ -981,19 +1245,24 @@ async function resolvePracticeReview(recordId, isCorrect, score) {
   await loadTeacherDashboard();
 }
 
-async function downloadCsvTemplate() {
-  const response = await fetch("/teacher/question-bank/csv-template", {
+async function downloadExcelTemplate() {
+  const grade = qs("excelImportGrade").value;
+  const subject = qs("excelImportSubject").value;
+  if (!grade || !subject) {
+    showToast("请先选择年级和学科");
+    return;
+  }
+  const response = await fetch(`/teacher/question-bank/excel-template?grade_level=${encodeURIComponent(grade)}&subject=${encodeURIComponent(subject)}`, {
     headers: { "X-Session-Token": state.token },
   });
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || `下载失败: ${response.status}`);
+    throw new Error(await extractErrorMessage(response));
   }
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = "question_template.csv";
+  anchor.download = `题目导入模板_${grade}_${subject}.xlsx`;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
@@ -1001,74 +1270,73 @@ async function downloadCsvTemplate() {
   showToast("模板已下载");
 }
 
-async function importCsv() {
-  const fileInput = qs("csvFileInput");
-  if (!fileInput.files || !fileInput.files.length) {
-    showToast("请先选择 CSV 文件");
+async function importExcel() {
+  const grade = qs("excelImportGrade").value;
+  const subject = qs("excelImportSubject").value;
+  const fileInput = qs("excelFileInput");
+  if (!grade || !subject) {
+    showToast("请先选择年级和学科");
     return;
   }
-  const file = fileInput.files[0];
-  const csvContent = await file.text();
+  if (!fileInput.files || !fileInput.files.length) {
+    showToast("请先选择 Excel 文件");
+    return;
+  }
+  const form = new FormData();
+  form.append("file", fileInput.files[0]);
+  form.append("grade_level", grade);
+  form.append("subject", subject);
+  qs("importExcelButton").disabled = true;
+  qs("importExcelButton").textContent = "导入中...";
+  const resultEl = qs("excelImportResult");
+  if (resultEl) resultEl.innerHTML = "";
   try {
-    const result = await api("/teacher/question-bank/import-csv", {
+    const result = await api("/teacher/question-bank/import-excel", {
       method: "POST",
-      body: csvContent,
-      headers: { "Content-Type": "text/plain" },
+      body: form,
     });
-    qs("csvImportResult").innerHTML = `
-      <div class="helper-card">
-        <strong>导入结果</strong>
-        <p>✅ 成功导入 ${result.imported_count} 道题目，⏭️ 跳过 ${result.skipped_count} 道</p>
-      </div>
-    `;
-    showToast(`导入 ${result.imported_count} 道，跳过 ${result.skipped_count} 道 ✓`);
+    const failedRows = Array.isArray(result.failed_rows) ? result.failed_rows : [];
+    const visibleFailures = failedRows.slice(0, 8);
+    const failureList = visibleFailures.length
+      ? `
+        <div style="margin-top:10px;">
+          <strong style="display:block;margin-bottom:6px;">失败明细</strong>
+          <ul style="margin:0;padding-left:18px;color:#646a73;">
+            ${visibleFailures.map((item) => `
+              <li style="margin:4px 0;">第 ${item.row_number} 行：${escapeHtml(item.reason)}${item.stem_preview ? `（${escapeHtml(item.stem_preview)}）` : ""}</li>
+            `).join("")}
+          </ul>
+          ${failedRows.length > visibleFailures.length ? `<p style="margin-top:6px;">仅显示前 ${visibleFailures.length} 条失败记录。</p>` : ""}
+        </div>
+      `
+      : "<p>所有非空题目行都已通过校验。</p>";
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="helper-card">
+          <strong>Excel 导入结果</strong>
+          <p>成功导入 ${result.imported_count} 道题目，失败 ${result.skipped_count} 道。</p>
+          ${failureList}
+        </div>
+      `;
+    }
+    showToast(`Excel 导入成功 ${result.imported_count} 道，失败 ${result.skipped_count} 道`);
+    fileInput.value = "";
     await loadPendingQuestions();
     await loadQuestionBank();
-    fileInput.value = "";
   } catch (error) {
-    showToast(`导入失败: ${error.message}`);
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div class="helper-card">
+          <strong>Excel 导入失败</strong>
+          <p>${escapeHtml(error.message)}</p>
+        </div>
+      `;
+    }
+    showToast(error.message);
+  } finally {
+    qs("importExcelButton").disabled = false;
+    qs("importExcelButton").textContent = "导入 Excel";
   }
-}
-
-async function importSampleDocuments() {
-  await api("/teacher/documents/import", {
-    method: "POST",
-    body: JSON.stringify({
-      documents: [
-        {
-          title: "一次函数课堂笔记",
-          topic_id: "linear_functions",
-          doc_type: "handout",
-          source_name: "课堂讲义 B2",
-          content: "学习一次函数时，先认出 y=kx+b 的结构，再区分 k 控制倾斜，b 控制纵轴交点。",
-        },
-        {
-          title: "函数概念题解模板",
-          topic_id: "functions",
-          doc_type: "solution",
-          source_name: "题解模板集",
-          content: "函数概念题先问输入和输出，再看两者是不是唯一对应。把抽象关系翻译成生活场景最容易理解。",
-        },
-      ],
-    }),
-  });
-  showToast("示例文档已导入 ✓");
-  await loadDocuments();
-}
-
-async function importDirectory() {
-  const result = await api("/teacher/documents/import-directory", {
-    method: "POST",
-    body: JSON.stringify({
-      directory_path: qs("directoryPathInput").value,
-      doc_type: qs("directoryDocType").value || null,
-      recursive: true,
-      limit: 50,
-    }),
-  });
-  renderDirectoryImport(result);
-  showToast(`已导入 ${result.imported_count} 个文件 ✓`);
-  await loadDocuments();
 }
 
 async function rebuildEmbeddings() {
@@ -1078,11 +1346,18 @@ async function rebuildEmbeddings() {
 }
 
 async function searchDocuments() {
+  const grade = qs("docSearchGrade").value;
+  const subject = qs("docSearchSubject").value;
+  if (!grade || !subject) {
+    showToast("请先选择年级和学科");
+    return;
+  }
   const hits = await api("/teacher/documents/search", {
     method: "POST",
     body: JSON.stringify({
       query: qs("docSearchInput").value,
-      topic_id: qs("docSearchTopicId").value || null,
+      grade_level: grade,
+      subject: subject,
       limit: 5,
       strategy: qs("docSearchStrategy").value,
     }),
@@ -1091,79 +1366,107 @@ async function searchDocuments() {
   showToast(`搜索到 ${hits.length} 条结果 ✓`);
 }
 
-async function evaluateRetrieval() {
-  const result = await api("/teacher/documents/evaluate", {
-    method: "POST",
-    body: JSON.stringify({
-      query: qs("evalQueryInput").value,
-      topic_id: qs("evalTopicId").value || null,
-      expected_topic_id: qs("evalTopicId").value || null,
-      expected_doc_type: qs("evalDocType").value || null,
-      limit: 5,
-    }),
-  });
-  renderRetrievalEvaluation(result);
-  showToast("对比完成 ✓");
-}
-
 function bindEvents() {
-  qs("showTeacherLoginButton").addEventListener("click", () => toggleTeacherAuthForm("login"));
-  qs("loginButton").addEventListener("click", () => login().catch(handleError));
-  qs("reloadTeacherButton").addEventListener("click", () => loadTeacherDashboard().catch(handleError));
-  qs("createClassroomButton").addEventListener("click", () => createClassroom().catch(handleError));
-  qs("reloadClassroomsButton").addEventListener("click", () => loadClassrooms().catch(handleError));
-  qs("teacherClassroomsView").addEventListener("click", (event) => {
-    const copyButton = event.target.closest(".copy-invite-button");
-    if (copyButton) { copyInviteCode(copyButton.dataset.inviteCode).catch(handleError); return; }
-    const refreshButton = event.target.closest(".refresh-invite-button");
-    if (refreshButton) refreshInviteCode(refreshButton.dataset.classroomId).catch(handleError);
+  bindClick("showTeacherLoginButton", () => toggleTeacherAuthForm("login"));
+  bindClick("loginButton", () => login().catch(handleError));
+  bindClick("reloadTeacherButton", () => loadTeacherDashboard().catch(handleError));
+  bindClick("reloadStudentsButton", () => loadStudentPage().catch(handleError));
+  bindChange("studentSearchInput", () => renderStudentList(state.studentPageData || { students: [] }));
+  bindClick("createClassroomButton", () => createClassroom().catch(handleError));
+  bindClick("reloadClassroomsButton", () => loadClassrooms().catch(handleError));
+  const classroomsView = qs("teacherClassroomsView");
+  if (classroomsView) {
+    classroomsView.addEventListener("click", (event) => {
+      const copyButton = event.target.closest(".copy-invite-button");
+      if (copyButton) { copyInviteCode(copyButton.dataset.inviteCode).catch(handleError); return; }
+      const refreshButton = event.target.closest(".refresh-invite-button");
+      if (refreshButton) refreshInviteCode(refreshButton.dataset.classroomId).catch(handleError);
+    });
+  }
+  bindClick("reloadAnalyticsButton", () => loadTeacherDashboard().catch(handleError));
+  bindClick("generateQuestionsButton", () => generateQuestions().catch(handleError));
+  bindClick("toggleExplanation", () => qs("toggleExplanation").classList.toggle("on"));
+  bindClick("toggleAnswerSheet", () => qs("toggleAnswerSheet").classList.toggle("on"));
+  bindChange("analyticsTimeFilter", () => loadTeacherDashboard().catch(handleError));
+  bindClick("loadPendingButton", () => loadPendingQuestions().catch(handleError));
+  bindClick("selectPendingAllButton", selectAllPending);
+  bindClick("selectPendingNoneButton", selectNonePending);
+  bindClick("approveSelectedButton", () => reviewSelected("approve").catch(handleError));
+  bindClick("rejectSelectedButton", () => reviewSelected("reject").catch(handleError));
+  bindClick("downloadExcelTemplateButton", () => downloadExcelTemplate().catch(handleError));
+  bindClick("importExcelButton", () => importExcel().catch(handleError));
+  bindClick("reloadPracticeReviewsButton", () => loadPracticeReviews().catch(handleError));
+  bindChange("practiceReviewStatus", () => loadPracticeReviews().catch(handleError));
+  bindClick("reloadQuestionBankButton", () => loadQuestionBank().catch(handleError));
+  bindChange("qbGradeFilter", () => { state.qbGrade = qs("qbGradeFilter").value; renderQuestionBank(state.qbItems); });
+  bindChange("qbTypeFilter", () => { state.qbType = qs("qbTypeFilter").value; renderQuestionBank(state.qbItems); });
+  bindChange("qbStatusFilter", () => { state.qbStatus = qs("qbStatusFilter").value; renderQuestionBank(state.qbItems); });
+  bindClick("qbSearchButton", () => { state.qbSearch = qs("qbSearchInput").value.trim(); renderQuestionBank(state.qbItems); });
+  bindClick("qbResetButton", () => {
+    state.qbSubject = ""; state.qbGrade = ""; state.qbType = ""; state.qbStatus = ""; state.qbSearch = "";
+    const searchInput = qs("qbSearchInput");
+    if (searchInput) searchInput.value = "";
+    if (qs("qbGradeFilter")) qs("qbGradeFilter").value = "";
+    if (qs("qbTypeFilter")) qs("qbTypeFilter").value = "";
+    if (qs("qbStatusFilter")) qs("qbStatusFilter").value = "";
+    renderQuestionBank(state.qbItems);
   });
-  qs("reloadAnalyticsButton").addEventListener("click", () => loadTeacherDashboard().catch(handleError));
-  qs("generateQuestionsButton").addEventListener("click", () => generateQuestions().catch(handleError));
-  qs("saveTemplateButton").addEventListener("click", saveGenerateTemplate);
-  qs("applyTemplateButton").addEventListener("click", applyGenerateTemplate);
-  qs("deleteTemplateButton").addEventListener("click", deleteGenerateTemplate);
-  qs("toggleExplanation").addEventListener("click", () => qs("toggleExplanation").classList.toggle("on"));
-  qs("toggleAnswerSheet").addEventListener("click", () => qs("toggleAnswerSheet").classList.toggle("on"));
-  qs("analyticsTimeFilter").addEventListener("change", () => loadTeacherDashboard().catch(handleError));
-  qs("loadPendingButton").addEventListener("click", () => loadPendingQuestions().catch(handleError));
-  qs("selectPendingAllButton").addEventListener("click", selectAllPending);
-  qs("selectPendingNoneButton").addEventListener("click", selectNonePending);
-  qs("approveSelectedButton").addEventListener("click", () => reviewSelected("approve").catch(handleError));
-  qs("rejectSelectedButton").addEventListener("click", () => reviewSelected("reject").catch(handleError));
-  qs("importCsvButton").addEventListener("click", () => importCsv().catch(handleError));
-  qs("downloadTemplateButton").addEventListener("click", () => downloadCsvTemplate().catch(handleError));
-  qs("reloadPracticeReviewsButton").addEventListener("click", () => loadPracticeReviews().catch(handleError));
-  qs("practiceReviewStatus").addEventListener("change", () => loadPracticeReviews().catch(handleError));
-  qs("reloadQuestionBankButton").addEventListener("click", () => loadQuestionBank().catch(handleError));
-  qs("importDocsButton").addEventListener("click", () => importSampleDocuments().catch(handleError));
-  qs("importDirectoryButton").addEventListener("click", () => importDirectory().catch(handleError));
-  qs("rebuildEmbeddingsButton").addEventListener("click", () => rebuildEmbeddings().catch(handleError));
-  qs("uploadDocumentButton").addEventListener("click", () => uploadDocument().catch(handleError));
-  qs("reloadDocumentsButton").addEventListener("click", () => loadDocuments().catch(handleError));
-  qs("documentFilterTopicId").addEventListener("change", renderDocumentLibrary);
-  qs("documentFilterGrade").addEventListener("change", renderDocumentLibrary);
-  qs("documentFilterSubject").addEventListener("change", renderDocumentLibrary);
-  qs("documentFilterDocType").addEventListener("change", renderDocumentLibrary);
-  qs("searchDocsButton").addEventListener("click", () => searchDocuments().catch(handleError));
-  qs("evaluateSearchButton").addEventListener("click", () => evaluateRetrieval().catch(handleError));
-  qs("addRetrievalCaseButton").addEventListener("click", () => addRetrievalCase().catch(handleError));
-  qs("runRetrievalCasesButton").addEventListener("click", () => runRetrievalCases().catch(handleError));
+  bindClick("rebuildEmbeddingsButton", () => rebuildEmbeddings().catch(handleError));
+  bindClick("uploadDocumentButton", () => uploadDocument().catch(handleError));
+  bindChange("uploadDocumentFile", onFileSelected);
+  const dropZone = qs("dropZone");
+  if (dropZone) {
+    dropZone.addEventListener("click", () => {
+      const input = qs("uploadDocumentFile");
+      if (input) input.click();
+    });
+    dropZone.addEventListener("dragover", (e) => { e.preventDefault(); dropZone.classList.add("drag-over"); });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("drag-over"));
+    dropZone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropZone.classList.remove("drag-over");
+      const file = e.dataTransfer.files[0];
+      if (file) {
+        const input = qs("uploadDocumentFile");
+        const dt = new DataTransfer();
+        dt.items.add(file);
+        input.files = dt.files;
+        onFileSelected();
+      }
+    });
+  }
+  bindClick("reloadDocumentsButton", () => loadDocuments().catch(handleError));
+  bindChange("documentFilterGrade", () => loadDocuments().catch(handleError));
+  bindChange("documentFilterSubject", () => loadDocuments().catch(handleError));
+  bindChange("documentFilterDocType", renderDocumentLibrary);
+  bindClick("searchDocsButton", () => searchDocuments().catch(handleError));
+  bindClick("searchStrategyHelpFab", toggleSearchHelp);
+  bindClick("searchStrategyHelpClose", toggleSearchHelp);
+  const searchHelpModal = qs("searchStrategyHelpModal");
+  if (searchHelpModal) {
+    searchHelpModal.addEventListener("click", (event) => {
+      if (event.target === searchHelpModal) toggleSearchHelp();
+    });
+  }
 
-  qs("generateSubject").addEventListener("change", () => {});
   document.querySelectorAll(".rag-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       state.activeRagTab = tab.dataset.ragTab;
       document.querySelectorAll(".rag-tab").forEach((item) => item.classList.toggle("active", item.dataset.ragTab === state.activeRagTab));
       document.querySelectorAll(".rag-panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.ragPanel === state.activeRagTab));
+      syncSearchHelpVisibility();
     });
   });
 
-  qs("modalStayButton").addEventListener("click", hideModal);
-  qs("modalGoReviewButton").addEventListener("click", () => {
+  bindClick("modalStayButton", hideModal);
+  bindClick("modalGoReviewButton", () => {
     hideModal();
     navigateTo("question-review");
   });
+
+  bindClick("studentDrawerClose", closeStudentDrawer);
+  const drawerOverlay = qs("studentDrawerOverlay");
+  if (drawerOverlay) drawerOverlay.addEventListener("click", closeStudentDrawer);
 
   document.querySelectorAll(".nav-btn[data-page]").forEach((item) => {
     item.addEventListener("click", () => navigateTo(item.dataset.page));
@@ -1181,19 +1484,19 @@ async function bootstrap() {
   if (mode === "register") toggleTeacherAuthForm("register");
   await loadTopics();
   await loadSchools();
-  refreshTemplateSelect();
   if (state.token) {
     try {
       state.user = await api("/auth/me");
       qs("authStatus").textContent = `${state.user.full_name}`;
       showAppMain();
       await loadTeacherDashboard();
+      await loadStudentPage();
       await loadClassrooms();
       await loadQuestionBank();
       await loadPendingQuestions();
       await loadPracticeReviews();
       await loadDocuments();
-      await loadRetrievalCases();
+      syncSearchHelpVisibility();
     } catch {
       localStorage.removeItem("zhuyu_token");
       state.token = "";

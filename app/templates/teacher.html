@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
   <title>祝余教育 - 管理端</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -408,25 +409,133 @@
     .rag-tabs {
       display: flex;
       gap: 0;
-      border-bottom: 1px solid #dee0e3;
+      border-bottom: 2px solid #e8ecf0;
       margin-bottom: 16px;
     }
     .rag-tab {
-      border: none;
-      background: transparent;
-      color: #646a73;
+      padding: 10px 20px;
       font: inherit;
       font-size: 14px;
       font-weight: 600;
-      padding: 10px 16px;
-      cursor: pointer;
+      border: none;
       border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      cursor: pointer;
+      color: #646a73;
+      background: none;
       transition: all 0.15s;
     }
     .rag-tab:hover { color: #1456f0; }
     .rag-tab.active { color: #1456f0; border-bottom-color: #1456f0; }
     .rag-panel { display: none; }
     .rag-panel.active { display: block; }
+    .rag-overview {
+      margin-bottom: 16px;
+    }
+    .rag-overview-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      padding: 12px 14px;
+      border: 1px solid #e8ecf0;
+      border-radius: 10px;
+      background: #fff;
+    }
+    .rag-stat-inline {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      flex: 1 1 480px;
+    }
+    .rag-stat-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #f7f8fa;
+      border: 1px solid #e8ecf0;
+      color: #646a73;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .rag-stat-chip strong {
+      color: #646a73;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .rag-stat-chip em {
+      color: #1f2329;
+      font-style: normal;
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .rag-overview-latest {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 260px;
+      max-width: 100%;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #1f2329;
+      font-size: 12px;
+    }
+    .rag-overview-latest strong { flex-shrink: 0; }
+    .rag-overview-latest span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .rag-layout { display: grid; grid-template-columns: 4fr 6fr; gap: 16px; align-items: start; }
+    .drop-zone {
+      border: 2px dashed #dde2ea;
+      border-radius: 8px;
+      padding: 28px 20px;
+      text-align: center;
+      color: #8f959e;
+      font-size: 14px;
+      cursor: pointer;
+      transition: all 0.15s;
+      background: #fafbfc;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: #1f5eff;
+      background: #e8efff;
+      color: #1f5eff;
+    }
+    .drop-zone.has-file {
+      border-color: #2ba471;
+      border-style: solid;
+      background: #eef8f3;
+      color: #1f2329;
+    }
+    .drop-zone-icon { font-size: 28px; margin-bottom: 8px; }
+    .doc-card {
+      border: 1px solid #e8ecf0;
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      transition: all 0.15s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .doc-card:hover {
+      border-color: #1f5eff;
+      box-shadow: 0 4px 12px rgba(31,94,255,0.08);
+    }
+    .doc-card-icon { font-size: 24px; flex-shrink: 0; }
+    .doc-card-info { flex: 1; min-width: 0; }
+    .doc-card-title { font-size: 14px; font-weight: 600; color: #1f2329; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .doc-card-meta { font-size: 12px; color: #8f959e; margin-top: 2px; }
+    .doc-card-actions { flex-shrink: 0; }
 
     /* ===== Document Row ===== */
     .doc-row-top {
@@ -516,38 +625,148 @@
       .student-card { flex-direction: column; align-items: flex-start; }
       .student-right { width: 100%; justify-content: flex-start; margin-top: 8px; }
       .form-row { grid-template-columns: 1fr; }
+      .rag-overview-strip,
+      .student-inline-top,
+      .qb-card-head,
+      .class-group-head,
+      .class-group-actions,
+      .drawer-student-overview,
+      .drawer-subject-head { flex-direction: column; align-items: flex-start; }
+      .rag-overview-latest { min-width: 0; width: 100%; border-radius: 12px; }
+      .student-inline-stats { width: 100%; justify-content: flex-start; }
+      .student-toolbar { justify-content: stretch; }
+      .student-toolbar input { width: 100%; }
+      .search-help-modal.show { align-items: stretch; justify-content: stretch; padding: 16px; }
+      .search-help-card { width: 100%; max-height: none; }
     }
     @media (max-width: 600px) {
       .kpi-grid { grid-template-columns: 1fr; }
     }
 
     /* ===== Question Table ===== */
-    .q-table {
-      width: 100%;
-      border-collapse: collapse;
+    /* ===== Question Bank Ant Design ===== */
+    .qb-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .qb-tab {
+      border: 1px solid #dde2ea;
+      border-radius: 20px;
+      background: #fff;
+      padding: 5px 16px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      color: #1f2329;
+      transition: all 0.15s;
+    }
+    .qb-tab:hover { border-color: #1f5eff; color: #1f5eff; }
+    .qb-tab.active { background: #1f5eff; border-color: #1f5eff; color: #fff; }
+    .qb-filter-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .qb-filter-bar select, .qb-filter-bar input {
+      width: auto; min-width: 100px;
+      padding: 6px 10px; font-size: 13px;
+      border: 1px solid #dde2ea; border-radius: 8px;
+      background: #fff;
+    }
+    .qb-filter-bar input { min-width: 180px; }
+    .qb-stats-bar {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 14px;
+      font-size: 13px;
+      color: #646a73;
+    }
+    .qb-stats-bar strong { color: #1f2329; }
+    .qb-card {
+      border: 1px solid #e8ecf0;
+      border-radius: 8px;
+      background: #fff;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      transition: all 0.15s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .qb-card:hover {
+      border-color: #1f5eff;
+      box-shadow: 0 4px 12px rgba(31,94,255,0.08);
+      transform: translateY(-1px);
+    }
+    .qb-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .qb-card-topic {
+      color: #1f5eff;
+      font-weight: 600;
       font-size: 13px;
     }
-    .q-table thead th {
-      text-align: left;
-      padding: 10px 12px;
-      background: #f7f8fa;
-      border-bottom: 2px solid #dee0e3;
-      color: #646a73;
-      font-weight: 600;
+    .qb-card-topic-path {
+      margin-top: 4px;
+      color: #8f959e;
       font-size: 12px;
-      white-space: nowrap;
     }
-    .q-table tbody td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #eee;
-      vertical-align: top;
+    .qb-card-badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
-    .q-table tbody tr:hover { background: #f9fafb; }
-    .q-table .q-topic { color: #1456f0; font-weight: 600; white-space: nowrap; }
-    .q-table .q-stem { max-width: 320px; }
-    .q-table .q-answer { color: #2ba471; font-weight: 600; white-space: nowrap; }
-    .q-table .q-explain { color: #8f959e; max-width: 200px; }
-    .q-table .option-preview { margin-top: 4px; }
+    .badge {
+      display: inline-block;
+      border-radius: 4px;
+      padding: 1px 8px;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 18px;
+    }
+    .badge-approved { background: #e8f8ef; color: #2ba471; }
+    .badge-pending { background: #fff4e5; color: #f7a440; }
+    .badge-rejected { background: #fef2f2; color: #d54941; }
+    .badge-low { background: #e8f8ef; color: #2ba471; }
+    .badge-mid { background: #fff4e5; color: #f7a440; }
+    .badge-high { background: #fef2f2; color: #d54941; }
+    .badge-type { background: #f0ebff; color: #8b5cf6; }
+    .badge-source { background: #e8efff; color: #1456f0; }
+    .qb-card-stem {
+      font-size: 14px;
+      color: #1f2329;
+      margin-bottom: 6px;
+      line-height: 1.5;
+    }
+    .qb-card-answer {
+      font-size: 13px;
+      color: #2ba471;
+      font-weight: 600;
+    }
+    .qb-card-explain {
+      font-size: 12px;
+      color: #8f959e;
+      margin-top: 4px;
+    }
+    .qb-card-tags {
+      display: flex;
+      gap: 4px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .qb-card-tags .badge { background: #f5f7fa; color: #646a73; }
+    .qb-empty {
+      text-align: center;
+      padding: 40px 20px;
+      color: #8f959e;
+      font-size: 14px;
+    }
 
     /* ===== CSV Import ===== */
     .csv-help {
@@ -615,6 +834,347 @@
     }
     .citation-meta { color: #8f959e; font-size: 12px; }
     .citation-list { display: grid; gap: 8px; margin-top: 10px; }
+
+    /* ===== Drawer ===== */
+    .drawer-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 500;
+      background: rgba(0,0,0,0.35);
+      transition: opacity 0.2s;
+    }
+    .drawer-overlay.open { display: block; }
+    .drawer-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 420px;
+      max-width: 90vw;
+      background: #fff;
+      z-index: 501;
+      box-shadow: -4px 0 24px rgba(0,0,0,0.12);
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer-panel.open { transform: translateX(0); }
+    .drawer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid #dee0e3;
+    }
+    .drawer-header h3 { font-size: 17px; margin: 0; }
+    .drawer-close {
+      background: none;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      color: #8f959e;
+      padding: 4px 8px;
+      border-radius: 6px;
+      transition: all 0.15s;
+    }
+    .drawer-close:hover { background: #f2f3f5; color: #1f2329; }
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px 20px;
+    }
+    .class-group-card {
+      border: 1px solid #e8ecf0;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 12px;
+      transition: all 0.15s;
+      background: #fff;
+    }
+    .class-group-card:hover {
+      border-color: #1456f0;
+      box-shadow: 0 2px 8px rgba(20,86,240,0.08);
+    }
+    .class-group-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .class-group-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .class-group-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: #1f2329;
+      margin-bottom: 6px;
+    }
+    .class-group-meta {
+      font-size: 12px;
+      color: #8f959e;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .class-group-meta span { display: inline-flex; align-items: center; gap: 4px; }
+    .class-group-badge {
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #1456f0;
+      font-size: 12px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .student-toolbar {
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: flex-end;
+    }
+    .student-toolbar input {
+      width: min(320px, 100%);
+      padding: 10px 12px;
+      border: 1px solid #dce2eb;
+      border-radius: 10px;
+      font-size: 13px;
+      background: #fff;
+    }
+    .student-inline-list {
+      display: grid;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .student-inline-card {
+      border: 1px solid #eef0f3;
+      border-radius: 10px;
+      padding: 14px;
+      background: #fafbfc;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .student-inline-card:hover {
+      border-color: #1456f0;
+      background: #fff;
+      box-shadow: 0 6px 14px rgba(20,86,240,0.08);
+    }
+    .student-inline-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .student-inline-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: #1f2329;
+    }
+    .student-inline-meta {
+      margin-top: 4px;
+      color: #8f959e;
+      font-size: 12px;
+    }
+    .student-inline-stats {
+      display: flex;
+      gap: 16px;
+      flex-shrink: 0;
+    }
+    .student-inline-stat {
+      min-width: 62px;
+      text-align: center;
+    }
+    .student-inline-stat strong {
+      display: block;
+      color: #1f2329;
+      font-size: 16px;
+    }
+    .student-inline-stat span {
+      color: #8f959e;
+      font-size: 11px;
+    }
+    .student-inline-footer {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px dashed #e5e7eb;
+      color: #1456f0;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .student-inline-subjects {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .student-subject-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid #e3e7ee;
+      color: #646a73;
+      font-size: 12px;
+    }
+    .student-subject-chip strong {
+      color: #1f2329;
+      font-size: 12px;
+    }
+    .drawer-student-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid #f2f3f5;
+    }
+    .drawer-student-card:last-child { border-bottom: none; }
+    .drawer-student-left { min-width: 0; }
+    .drawer-student-name { font-size: 14px; font-weight: 600; color: #1f2329; }
+    .drawer-student-subject { font-size: 12px; color: #8f959e; margin-top: 2px; }
+    .drawer-student-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .drawer-stat { text-align: center; min-width: 50px; }
+    .drawer-stat-value { font-size: 15px; font-weight: 700; }
+    .drawer-stat-label { font-size: 10px; color: #8f959e; }
+    .drawer-student-overview {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 16px;
+      border: 1px solid #e8ecf0;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #f8fbff 0%, #ffffff 100%);
+    }
+    .drawer-student-overview-main { min-width: 0; }
+    .drawer-section-title {
+      margin: 18px 0 12px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #1f2329;
+    }
+    .drawer-subject-list {
+      display: grid;
+      gap: 12px;
+    }
+    .drawer-subject-card {
+      border: 1px solid #e8ecf0;
+      border-radius: 12px;
+      padding: 14px;
+      background: #fff;
+    }
+    .drawer-subject-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      font-size: 13px;
+      color: #646a73;
+      margin-bottom: 8px;
+    }
+    .drawer-subject-head strong {
+      color: #1f2329;
+      font-size: 14px;
+    }
+    .drawer-subject-metrics {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      color: #3c4350;
+      font-size: 13px;
+    }
+    .word-template-note {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+      padding: 12px 14px;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      background: #f8fafc;
+      color: #475467;
+      font-size: 13px;
+    }
+    .word-template-note strong {
+      color: #1f2329;
+      font-size: 13px;
+    }
+    .search-help-fab {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 520;
+      width: 54px;
+      height: 54px;
+      border: none;
+      border-radius: 999px;
+      background: linear-gradient(135deg, #1456f0 0%, #3478ff 100%);
+      color: #fff;
+      font-size: 24px;
+      font-weight: 700;
+      box-shadow: 0 14px 32px rgba(20,86,240,0.28);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+    }
+    .search-help-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 521;
+      background: rgba(15, 23, 42, 0.34);
+      padding: 24px;
+    }
+    .search-help-modal.show {
+      display: flex;
+      align-items: flex-end;
+      justify-content: flex-end;
+    }
+    .search-help-card {
+      width: min(420px, 100%);
+      max-height: min(78vh, 680px);
+      overflow: auto;
+      background: #fff;
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(15,23,42,0.2);
+    }
+    .search-help-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .search-help-head h3 {
+      margin: 0;
+      font-size: 17px;
+    }
+    .search-help-list {
+      display: grid;
+      gap: 12px;
+    }
+    .search-help-item {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: #f8fafc;
+    }
+    .search-help-item strong {
+      display: block;
+      margin-bottom: 6px;
+      color: #1f2329;
+    }
+    .search-help-item p {
+      margin: 4px 0;
+      font-size: 13px;
+      line-height: 1.55;
+      color: #4b5563;
+    }
   </style>
 </head>
 <body>
@@ -654,6 +1214,9 @@
           <button class="nav-btn" data-page="classrooms">
             <span class="icon">🏫</span><span class="text">学校班级</span>
           </button>
+          <button class="nav-btn" data-page="students">
+            <span class="icon">👥</span><span class="text">学生管理</span>
+          </button>
         </div>
         <div class="nav-group">
           <div class="nav-group-label">题库</div>
@@ -670,7 +1233,7 @@
             <span class="icon">📚</span><span class="text">题库列表</span>
           </button>
           <button class="nav-btn" data-page="question-import">
-            <span class="icon">📋</span><span class="text">CSV 导入</span>
+            <span class="icon">📋</span><span class="text">题目录入</span>
           </button>
         </div>
         <div class="nav-group">
@@ -701,29 +1264,20 @@
           <button id="reloadTeacherButton" class="btn btn-ghost btn-sm"><span id="dashboardSpinner"></span>🔄 刷新</button>
         </div>
         <div id="teacherKpiView" class="kpi-grid"></div>
-        <div class="two-col" style="margin-top:16px;">
-          <section class="panel">
-            <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
-              <h3>👥 学生列表</h3>
-              <div class="student-list-header" id="studentListHeader"></div>
+        <section class="panel" style="margin-top:16px;">
+          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+            <h3>📈 练习分析</h3>
+            <div class="actions">
+              <select id="analyticsTimeFilter" style="width:auto;min-width:100px;padding:4px 8px;font-size:12px;">
+                <option value="all">全部时间</option>
+                <option value="week">本周</option>
+                <option value="month">本月</option>
+              </select>
+              <button id="reloadAnalyticsButton" class="btn btn-ghost btn-sm"><span id="analyticsSpinner"></span>🔄 刷新</button>
             </div>
-            <div id="teacherStudentsView" class="empty-state">暂无学生数据</div>
-          </section>
-          <section class="panel">
-            <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
-              <h3>📈 练习分析</h3>
-              <div class="actions">
-                <select id="analyticsTimeFilter" style="width:auto;min-width:100px;padding:4px 8px;font-size:12px;">
-                  <option value="all">全部时间</option>
-                  <option value="week">本周</option>
-                  <option value="month">本月</option>
-                </select>
-                <button id="reloadAnalyticsButton" class="btn btn-ghost btn-sm"><span id="analyticsSpinner"></span>🔄 刷新</button>
-              </div>
-            </div>
-            <div id="practiceAnalyticsView" class="empty-state">暂无练习分析</div>
-          </section>
-        </div>
+          </div>
+          <div id="practiceAnalyticsView" class="empty-state">暂无练习分析</div>
+        </section>
       </section>
 
       <section class="page" data-page="classrooms">
@@ -755,25 +1309,39 @@
         </section>
       </section>
 
+      <section class="page" data-page="students">
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <h2>👥 学生管理</h2>
+            <p>按年级和班级查看学生名单，点击学生后在右侧查看各科学习掌握度</p>
+          </div>
+          <button id="reloadStudentsButton" class="btn btn-ghost btn-sm">🔄 刷新</button>
+        </div>
+        <div class="student-toolbar">
+          <input id="studentSearchInput" placeholder="按姓名搜索学生">
+        </div>
+        <div id="studentPageView" class="empty-state">加载中...</div>
+      </section>
+
       <section class="page" data-page="question-generate">
         <div class="page-header">
           <h2>🤖 AI 生成题目</h2>
-          <p>选择科目和知识点后，系统调用 AI 批量生成题目，生成后进入待审核状态</p>
+          <p>系统会根据你已创建班级所属的年级提供学科和知识点范围，生成后的题目会进入待审核状态</p>
         </div>
-        <div class="panel" style="max-width:640px;">
+        <div class="panel" style="max-width:720px;margin:0 auto;">
           <label><span>知识点</span>
             <div class="form-row" style="margin-bottom:8px;">
-              <select id="generateSubject"><option value="">学科</option></select>
               <select id="generateGrade"><option value="">年级</option></select>
+              <select id="generateSubject"><option value="">学科</option></select>
             </div>
             <select id="generateTopicId"><option value="">知识点</option></select>
           </label>
-          <label><span>或手动输入知识点ID</span><input id="generateTopicManual" placeholder="如 equations，留空则使用上方选择"></label>
-          <label><span>难度</span>
-            <select id="generateDifficulty">
-              <option value="low">🟢 低难度（基础概念题）</option>
-              <option value="medium" selected>🟡 中难度（常规练习题）</option>
-              <option value="high">🔴 高难度（综合应用题）</option>
+          <p id="generateGradeHint" class="hint" style="color:#646a73;font-size:13px;margin:-4px 0 12px;">请先创建班级，系统会根据已有班级所属年级提供出题范围。</p>
+          <label><span>题型分类</span>
+            <select id="generateCategory">
+              <option value="basic">📘 基础概念（概念理解、定义辨析）</option>
+              <option value="regular" selected>📗 常规（标准练习、方法应用）</option>
+              <option value="comprehensive">📕 综合（跨知识点、综合应用）</option>
             </select>
           </label>
           <div class="form-row">
@@ -798,16 +1366,6 @@
           </div>
           <div class="actions" style="margin-bottom:12px;">
             <button id="generateQuestionsButton" class="btn btn-primary">🤖 开始生成</button>
-            <button id="saveTemplateButton" class="btn btn-ghost btn-sm">💾 保存为模板</button>
-          </div>
-          <div id="templateSection" style="display:none;">
-            <label><span>使用已保存模板</span>
-              <select id="templateSelect"><option value="">选择模板...</option></select>
-            </label>
-            <div class="actions">
-              <button id="applyTemplateButton" class="btn btn-ghost btn-sm">应用模板</button>
-              <button id="deleteTemplateButton" class="btn btn-danger btn-sm">删除模板</button>
-            </div>
           </div>
         </div>
       </section>
@@ -815,7 +1373,7 @@
       <section class="page" data-page="question-review">
         <div class="page-header">
           <h2>✅ 题目审核</h2>
-          <p>审核 AI 生成和 CSV 导入的待审核题目，支持单选、多选和全选</p>
+          <p>审核 AI 生成和 Excel 导入的待审核题目，支持单选、多选和全选</p>
         </div>
         <div class="panel">
           <div class="actions" style="margin-bottom:12px;">
@@ -854,64 +1412,97 @@
       </section>
 
       <section class="page" data-page="question-bank">
-        <div class="page-header">
-          <h2>📚 题库列表</h2>
-          <p>所有已入库的题目 <button id="reloadQuestionBankButton" class="btn btn-ghost btn-sm" style="margin-left:8px;">刷新</button></p>
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <h2>📚 题库列表</h2>
+            <p>按年级、学科和知识点浏览已入库题目</p>
+          </div>
+          <button id="reloadQuestionBankButton" class="btn btn-ghost btn-sm">🔄 刷新</button>
         </div>
-        <div id="questionBankView" class="timeline empty-state">加载中...</div>
+        <div id="qbTabs" class="qb-tabs"></div>
+        <div class="qb-filter-bar">
+          <select id="qbGradeFilter"><option value="">全部年级</option></select>
+          <select id="qbTypeFilter">
+            <option value="">全部题型</option>
+            <option value="blank">填空题</option>
+            <option value="choice">选择题</option>
+            <option value="judgment">判断题</option>
+            <option value="solution">解答题</option>
+            <option value="steps">分步题</option>
+          </select>
+          <select id="qbStatusFilter">
+            <option value="">全部状态</option>
+            <option value="approved">已审核</option>
+            <option value="pending">待审核</option>
+          </select>
+          <input id="qbSearchInput" placeholder="搜索题目或答案">
+          <button id="qbSearchButton" class="btn btn-primary btn-sm">查询</button>
+          <button id="qbResetButton" class="btn btn-ghost btn-sm">重置</button>
+        </div>
+        <div id="qbStatsBar" class="qb-stats-bar"></div>
+        <div id="questionBankView" class="qb-empty">加载中...</div>
       </section>
 
       <section class="page" data-page="question-import">
         <div class="page-header">
-          <h2>📋 CSV 批量导入</h2>
-          <p>上传 CSV 文件批量导入题目，导入后进入待审核状态</p>
+          <h2>📋 题目录入</h2>
+          <p>老师先按所教班级选择年级和学科，再下载 Excel 模板录入题目</p>
         </div>
         <div class="panel" style="max-width:720px;">
-          <details class="csv-help">
-            <summary>📖 CSV 文件格式说明</summary>
-            <p>CSV 文件第一行为表头，支持中文和英文表头。必填列：<code>题目</code>、<code>答案</code>、<code>知识点ID</code>。选填列：<code>难度</code>、<code>解析</code>、<code>题型</code>、<code>选项</code>、<code>空数</code>、<code>得分点</code>、<code>标签</code>。</p>
-            <p><strong>中文表头：</strong><code>题目, 答案, 知识点ID, 难度, 解析, 题型, 选项, 空数, 得分点, 标签</code></p>
-            <p><strong>英文表头：</strong><code>stem, answer, topic_id, difficulty, explanation, question_type, options, blank_count, score_points, tags</code></p>
-            <p>选择题选项示例：<code>A:函数|B:方程|C:图形|D:单位</code>；得分点示例：<code>斜率:1:3|截距:1:-2</code></p>
-            <p><strong>知识点ID 参考：</strong><code>arithmetic</code>(算术)、<code>equations</code>(方程)、<code>functions</code>(函数)、<code>linear_functions</code>(一次函数)、<code>geometry_triangles</code>(三角形)、<code>quadratic</code>(二次方程)、<code>chinese_reading</code>(现代文阅读)、<code>chinese_classical</code>(文言文)、<code>english_vocab</code>(英语词汇)、<code>english_grammar</code>(英语语法)、<code>physics_mechanics</code>(力学)、<code>physics_electricity</code>(电学)</p>
-          </details>
-          <div class="csv-upload-row">
-            <input id="csvFileInput" type="file" accept=".csv,.txt">
-            <button id="downloadTemplateButton" class="btn btn-ghost btn-sm" type="button">下载模板</button>
-            <button id="importCsvButton" class="btn btn-primary">📤 导入</button>
+          <div class="panel-header">
+            <div>
+              <h3>Excel 模板导入</h3>
+              <p>一级知识点固定为当前学科，不在模板表头中显示；二级知识点来自该年级该学科下的数据库配置</p>
+            </div>
           </div>
-          <div id="csvImportResult" style="margin-top:12px;"></div>
+          <div class="form-row">
+            <select id="excelImportGrade"><option value="">年级</option></select>
+            <select id="excelImportSubject"><option value="">学科</option></select>
+          </div>
+          <p id="excelImportHint" class="hint" style="color:#646a73;font-size:13px;margin:-4px 0 12px;">请先创建班级，系统只会开放你所教班级对应年级的 Excel 导题模板。</p>
+          <div class="word-template-note">
+            <strong>模板说明</strong>
+            <span>文件名会显示当前年级和学科；表格内只需要填写题目、答案、二级知识点、题型等内容。二级知识点列会提供当前学校当前年级当前学科的下拉选项。</span>
+          </div>
+          <div class="csv-upload-row">
+            <input id="excelFileInput" type="file" accept=".xlsx">
+            <button id="downloadExcelTemplateButton" class="btn btn-ghost btn-sm" type="button">下载 Excel 模板</button>
+            <button id="importExcelButton" class="btn btn-primary">导入 Excel</button>
+          </div>
+          <div id="excelImportResult" style="margin-top:12px;"></div>
         </div>
       </section>
 
       <section class="page" data-page="documents">
         <div class="page-header">
           <h2>📄 资料/RAG 工作区</h2>
-          <p>上传资料、检查索引、调试检索证据，并维护一组可重复运行的检索评测问题</p>
+          <p>按学校、年级、学科管理资料，上传后会按对应范围完成向量化存储和检索</p>
         </div>
         <section class="rag-overview" id="ragOverviewView"></section>
 
         <div class="rag-tabs">
-          <button class="rag-tab active" data-rag-tab="library">资料库</button>
-          <button class="rag-tab" data-rag-tab="search">搜索调试</button>
-          <button class="rag-tab" data-rag-tab="evaluation">评测集</button>
+          <button class="rag-tab active" data-rag-tab="library">📁 资料库</button>
+          <button class="rag-tab" data-rag-tab="search">🔍 搜索调试</button>
         </div>
 
         <div class="rag-panel active" data-rag-panel="library">
-          <div class="two-col">
+          <div class="rag-layout">
             <section class="panel">
               <div class="panel-header">
-                <div><h3>上传资料</h3><p>支持 txt、md、pdf、docx，单个文件不超过 10MB</p></div>
+                <div><h3>上传资料</h3><p>支持 txt、md、pdf、docx，单个不超过 10MB</p></div>
               </div>
-              <label><span>选择文件</span><input id="uploadDocumentFile" type="file" accept=".txt,.md,.markdown,.pdf,.docx"></label>
+              <div id="dropZone" class="drop-zone">
+                <div class="drop-zone-icon">📂</div>
+                <div>拖拽文件到此处，或点击选择</div>
+                <input id="uploadDocumentFile" type="file" accept=".txt,.md,.markdown,.pdf,.docx" style="display:none;">
+              </div>
               <label><span>资料标题</span><input id="uploadDocumentTitle" placeholder="留空则使用文件名"></label>
               <label><span>来源名称</span><input id="uploadDocumentSource" placeholder="如 七年级讲义 A1"></label>
-              <div class="actions">
-              <div class="cascade-row">
-                <select id="uploadDocumentSubject"><option value="">学科</option></select>
+              <div class="form-row">
                 <select id="uploadDocumentGrade"><option value="">年级</option></select>
-                <select id="uploadDocumentTopicId"><option value="">知识点</option></select>
+                <select id="uploadDocumentSubject"><option value="">学科</option></select>
               </div>
+              <div class="form-row">
                 <select id="uploadDocumentDocType">
                   <option value="handout">讲义</option>
                   <option value="textbook">教材</option>
@@ -921,42 +1512,28 @@
                 <button id="uploadDocumentButton" class="btn btn-primary">上传并索引</button>
               </div>
               <div class="actions" style="margin-top:12px;">
-                <button id="rebuildEmbeddingsButton" class="btn btn-ghost btn-sm">重建索引</button>
-                <button id="importDocsButton" class="btn btn-ghost btn-sm">导入示例资料</button>
+                <button id="rebuildEmbeddingsButton" class="btn btn-ghost btn-sm">重建本校索引</button>
               </div>
-              <label style="margin-top:14px;"><span>服务器目录批量导入</span><input id="directoryPathInput" placeholder="/absolute/path/to/docs"></label>
-              <div class="actions">
-                <select id="directoryDocType">
-                  <option value="">自动判断类型</option>
-                  <option value="textbook">教材</option>
-                  <option value="handout">讲义</option>
-                  <option value="solution">题解</option>
-                </select>
-                <button id="importDirectoryButton" class="btn btn-ghost btn-sm">批量导入目录</button>
-              </div>
-              <div id="directoryImportView" class="timeline empty-state" style="margin-top:12px;"></div>
+              <div id="uploadDocumentResult" style="margin-top:12px;"></div>
             </section>
 
             <section class="panel">
-              <div class="panel-header">
-                <div><h3>资料列表</h3><p>查看索引状态、片段预览和删除自己上传的资料</p></div>
+              <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;">
+                <div><h3>资料列表</h3></div>
+                <div class="actions">
+                  <select id="documentFilterGrade" style="width:auto;min-width:80px;font-size:12px;"><option value="">年级</option></select>
+                  <select id="documentFilterSubject" style="width:auto;min-width:80px;font-size:12px;"><option value="">学科</option></select>
+                  <select id="documentFilterDocType" style="width:auto;min-width:80px;font-size:12px;">
+                    <option value="">全部类型</option>
+                    <option value="textbook">教材</option>
+                    <option value="handout">讲义</option>
+                    <option value="solution">题解</option>
+                    <option value="reference">参考资料</option>
+                  </select>
+                  <button id="reloadDocumentsButton" class="btn btn-ghost btn-sm">🔄 刷新</button>
+                </div>
               </div>
-              <div class="actions" style="margin-bottom:12px;">
-              <div class="cascade-row">
-                <select id="documentFilterSubject"><option value="">学科</option></select>
-                <select id="documentFilterGrade"><option value="">年级</option></select>
-                <select id="documentFilterTopicId"><option value="">知识点</option></select>
-              </div>
-                <select id="documentFilterDocType">
-                  <option value="">全部类型</option>
-                  <option value="textbook">教材</option>
-                  <option value="handout">讲义</option>
-                  <option value="solution">题解</option>
-                  <option value="reference">参考资料</option>
-                </select>
-                <button id="reloadDocumentsButton" class="btn btn-ghost btn-sm">刷新</button>
-              </div>
-              <div id="documentLibraryView" class="timeline empty-state">加载中...</div>
+              <div id="documentLibraryView" class="empty-state">加载中...</div>
             </section>
           </div>
         </div>
@@ -964,14 +1541,13 @@
         <div class="rag-panel" data-rag-panel="search">
           <section class="panel">
             <div class="panel-header">
-              <div><h3>搜索调试</h3><p>同一句问题可以切换检索策略，观察分数拆解和证据片段</p></div>
+              <div><h3>搜索调试</h3><p>老师按年级和学科测试检索效果，观察不同检索方法返回的证据片段</p></div>
             </div>
             <label><span>搜索问题</span><textarea id="docSearchInput" rows="2" placeholder="例如：一次函数的斜率和截距怎么理解？"></textarea></label>
             <div class="actions">
               <div class="cascade-row">
-                <select id="docSearchSubject"><option value="">学科</option></select>
                 <select id="docSearchGrade"><option value="">年级</option></select>
-                <select id="docSearchTopicId"><option value="">知识点</option></select>
+                <select id="docSearchSubject"><option value="">学科</option></select>
               </div>
               <select id="docSearchStrategy">
                 <option value="hybrid">智能混合（推荐）</option>
@@ -983,60 +1559,6 @@
             </div>
             <div id="documentSearchView" class="timeline empty-state" style="margin-top:12px;">输入问题后点击搜索</div>
           </section>
-        </div>
-
-        <div class="rag-panel" data-rag-panel="evaluation">
-          <div class="two-col">
-            <section class="panel">
-              <div class="panel-header">
-                <div><h3>评测问题集</h3><p>维护固定问题，反复观察资料库和检索策略的质量</p></div>
-              </div>
-              <label><span>用例名称</span><input id="caseLabelInput" placeholder="如 斜率讲义命中"></label>
-              <label><span>测试问题</span><textarea id="caseQueryInput" rows="2" placeholder="例如：讲义里一次函数的斜率和截距"></textarea></label>
-              <div class="actions">
-              <div class="cascade-row">
-                <select id="caseSubject"><option value="">学科</option></select>
-                <select id="caseGrade"><option value="">年级</option></select>
-                <select id="caseTopicId"><option value="">知识点</option></select>
-              </div>
-                <select id="caseDocType">
-                  <option value="">不限制资料类型</option>
-                  <option value="textbook">教材</option>
-                  <option value="handout">讲义</option>
-                  <option value="solution">题解</option>
-                  <option value="reference">参考资料</option>
-                </select>
-                <button id="addRetrievalCaseButton" class="btn btn-primary">添加评测题</button>
-              </div>
-              <div class="actions" style="margin-top:12px;">
-                <button id="runRetrievalCasesButton" class="btn btn-ghost btn-sm">运行评测集</button>
-                <button id="evaluateSearchButton" class="btn btn-ghost btn-sm">单次对比</button>
-              </div>
-              <div id="retrievalCaseListView" class="timeline empty-state" style="margin-top:12px;">暂无评测题</div>
-            </section>
-
-            <section class="panel">
-              <div class="panel-header">
-                <div><h3>评测结果</h3><p>命中首位、命中前三和 MRR 越高，说明证据越靠前</p></div>
-              </div>
-              <label><span>临时测试问题</span><textarea id="evalQueryInput" rows="2" placeholder="例如：讲义里一次函数的斜率和截距"></textarea></label>
-              <div class="actions">
-              <div class="cascade-row">
-                <select id="evalSubject"><option value="">学科</option></select>
-                <select id="evalGrade"><option value="">年级</option></select>
-                <select id="evalTopicId"><option value="">知识点</option></select>
-              </div>
-                <select id="evalDocType">
-                  <option value="">不限制</option>
-                  <option value="textbook">教材</option>
-                  <option value="handout">讲义</option>
-                  <option value="solution">题解</option>
-                  <option value="reference">参考资料</option>
-                </select>
-              </div>
-              <div id="retrievalEvaluationView" class="empty-state" style="margin-top:12px;">点击按钮开始对比或运行评测集</div>
-            </section>
-          </div>
         </div>
       </section>
 
@@ -1055,6 +1577,51 @@
     </div>
   </div>
 
-  <script src="/static/teacher.js?v=20260413"></script>
+  <div id="studentDrawerOverlay" class="drawer-overlay"></div>
+  <div id="studentDrawerPanel" class="drawer-panel">
+    <div class="drawer-header">
+      <h3 id="studentDrawerTitle">学生详情</h3>
+      <button class="drawer-close" id="studentDrawerClose">&times;</button>
+    </div>
+    <div class="drawer-body" id="studentDrawerBody"></div>
+  </div>
+
+  <button id="searchStrategyHelpFab" class="search-help-fab" type="button" style="display:none;">?</button>
+  <div id="searchStrategyHelpModal" class="search-help-modal">
+    <div class="search-help-card">
+      <div class="search-help-head">
+        <h3>检索方法说明</h3>
+        <button id="searchStrategyHelpClose" class="drawer-close">&times;</button>
+      </div>
+      <div class="search-help-list">
+        <div class="search-help-item">
+          <strong>智能混合</strong>
+          <p>目的：同时兼顾关键词命中和语义相似，适合作为老师日常默认搜索。</p>
+          <p>优点：稳定、通用，既能找到原文也能找到表达接近的资料。</p>
+          <p>缺点：速度和逻辑复杂度高于单一方法。</p>
+        </div>
+        <div class="search-help-item">
+          <strong>关键词搜索</strong>
+          <p>目的：优先找原文术语、定义、公式、固定说法。</p>
+          <p>优点：命中词条直接、结果可解释性强。</p>
+          <p>缺点：换种说法后容易漏召回。</p>
+        </div>
+        <div class="search-help-item">
+          <strong>语义搜索</strong>
+          <p>目的：找含义接近但措辞不同的资料内容。</p>
+          <p>优点：适合自然语言提问、模糊表达和同义改写。</p>
+          <p>缺点：有时会召回语义接近但不够精确的片段。</p>
+        </div>
+        <div class="search-help-item">
+          <strong>重排序搜索</strong>
+          <p>目的：在已有候选资料上重新排序，把最相关内容尽量顶到前面。</p>
+          <p>优点：前几条结果质量通常更高。</p>
+          <p>缺点：依赖前序召回，速度最慢，不适合做唯一默认策略。</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/teacher.js?v=20260417c"></script>
 </body>
 </html>
