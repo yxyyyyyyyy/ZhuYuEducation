@@ -228,7 +228,10 @@ class QuestionBankService:
     def list_practice_reviews(self, teacher_user_id: int, status: str = "pending") -> list[PracticeReviewView]:
         with sql_repository.session() as session:
             students = session.execute(
-                select(StudentProfileORM).where(StudentProfileORM.user_id == teacher_user_id)
+                select(StudentProfileORM).where(
+                    StudentProfileORM.classroom_id.is_not(None),
+                    (StudentProfileORM.teacher_user_id == teacher_user_id) | (StudentProfileORM.user_id == teacher_user_id),
+                )
             ).scalars().all()
             student_map = {student.id: student.name for student in students}
             if not student_map:
@@ -269,7 +272,8 @@ class QuestionBankService:
             student = session.execute(
                 select(StudentProfileORM).where(
                     StudentProfileORM.id == record.student_profile_id,
-                    StudentProfileORM.user_id == teacher_user_id,
+                    StudentProfileORM.classroom_id.is_not(None),
+                    (StudentProfileORM.teacher_user_id == teacher_user_id) | (StudentProfileORM.user_id == teacher_user_id),
                 )
             ).scalars().first()
             if not student:
@@ -825,12 +829,29 @@ class QuestionBankService:
             ),
         ]
 
+    def _safe_score_points(self, raw) -> list[ScorePoint]:
+        if not raw:
+            return []
+        if isinstance(raw, list):
+            result = []
+            for item in raw:
+                if isinstance(item, dict) and "title" in item:
+                    result.append(ScorePoint(
+                        title=str(item.get("title", "")),
+                        points=float(item.get("points", 1.0)),
+                        keywords=item.get("keywords", []),
+                    ))
+            return result
+        return []
+
     def _question_from_row(self, row: QuestionBankORM) -> Question:
         question_type = self._resolve_question_type(row.question_type, row.stem, row.answer, row.score_points or [])
         knowledge_l2_id = (row.knowledge_l2_id or row.topic_id or "").strip()
         knowledge_l1_id = (row.knowledge_l1_id or "").strip()
         difficulty_level = int(row.difficulty_level or self._difficulty_float_to_level(row.difficulty))
         difficulty = float(row.difficulty if row.difficulty is not None else self._difficulty_level_to_float(difficulty_level))
+        raw_score_points = row.score_points or self._infer_score_points(question_type, row.explanation, row.answer)
+        score_points = self._safe_score_points(raw_score_points)
         return Question(
             id=row.external_id,
             topic_id=knowledge_l2_id,
@@ -845,8 +866,10 @@ class QuestionBankService:
             question_type=question_type,
             options=row.options or self._infer_options(question_type, row.stem),
             blank_count=row.blank_count or self._infer_blank_count(row.answer),
-            score_points=row.score_points or self._infer_score_points(question_type, row.explanation, row.answer),
+            score_points=score_points,
             tags=row.tags or [],
+            grade_level=getattr(row, "grade_level", "") or "",
+            subject=getattr(row, "subject", "") or "",
         )
 
     def _resolve_question_type(self, raw_type: str | None, stem: str, answer: str, score_points: list) -> QuestionType:
@@ -1066,7 +1089,8 @@ class QuestionBankService:
             for item in raw_questions:
                 external_id = f"ai_{knowledge_l2_id}_{uuid.uuid4().hex[:8]}"
                 options = item.get("options", [])
-                score_points = item.get("score_points", [])
+                raw_score_points = item.get("score_points", [])
+                score_points = [sp for sp in raw_score_points if isinstance(sp, dict) and "title" in sp] if isinstance(raw_score_points, list) else []
                 blank_count = item.get("blank_count", 1)
                 if options:
                     blank_count = 1

@@ -15,6 +15,7 @@ from app.domain.models import (
     AnnouncementView,
     ChatMessageSend,
     ChatMessageView,
+    ChatFavoriteRequest,
     ChatSessionCreate,
     ChatSessionView,
     ChatTurnResponse,
@@ -118,14 +119,57 @@ def require_chat_session(session_id: int, user: UserSummary) -> None:
 
 
 def _topics_for_context(user: UserSummary | None = None, textbook_id: int | None = None) -> list[Topic]:
-    if user and user.school_id:
+    school_id = user.school_id if user else None
+    if user and not school_id and user.role == "student":
         try:
-            resolved_textbook_id = textbook_id
-            if resolved_textbook_id is None:
-                return container.knowledge_config_service.list_topics_for_school(user.school_id, None)
+            profile = container.student_service.list_profiles(user.id)[0]
+            school_id = profile.school_id
+        except Exception:
+            school_id = None
+    if school_id:
+        try:
+            return container.knowledge_config_service.list_topics_for_school(school_id, textbook_id)
         except Exception:
             pass
     return container.repository.list_topics()
+
+
+def _topics_for_student_profile(user: UserSummary, profile: StudentProfileDetail) -> list[Topic]:
+    school_id = profile.school_id or user.school_id
+    topics = []
+    if school_id:
+        try:
+            topics = container.knowledge_config_service.list_topics_for_school(school_id, None)
+        except Exception:
+            topics = []
+    if not topics:
+        topics = _topics_for_context(user, None)
+    if not topics:
+        topics = container.repository.list_topics()
+    grade_level = (profile.grade_level or "").strip()
+    if not grade_level:
+        return topics
+    grade_topics = [
+        topic for topic in topics
+        if not topic.grade_level or topic.grade_level == grade_level
+    ]
+    return grade_topics or topics
+
+
+def require_student_topic(topic_id: str, user: UserSummary, profile: StudentProfileDetail) -> Topic:
+    all_topics = _topics_for_student_profile(user, profile)
+    topic = next((item for item in all_topics if item.id == topic_id), None)
+    if topic:
+        return topic
+    repo_topic = container.repository.get_topic(topic_id) if container.repository.has_topic(topic_id) else None
+    if repo_topic:
+        matched = next((item for item in all_topics if item.subject == repo_topic.subject and item.name == repo_topic.name), None)
+        if matched:
+            return matched
+        children = [item for item in all_topics if item.subject == repo_topic.subject]
+        if children:
+            return children[0]
+    raise HTTPException(status_code=404, detail="topic not found for current grade")
 
 
 def require_topic(topic_id: str, user: UserSummary | None = None, textbook_id: int | None = None) -> None:
@@ -997,8 +1041,8 @@ def save_mastery(
     x_session_token: str | None = Header(default=None),
 ) -> StudentProfileDetail:
     user = current_user(x_session_token)
-    profile = require_student_profile(student_profile_id, user)
-    require_mastery_topics(request.mastery, user=user, textbook_id=profile.textbook_id)
+    require_student_profile(student_profile_id, user)
+    require_mastery_topics(request.mastery, user=user)
     try:
         return container.student_service.save_mastery(student_profile_id, request, user.id)
     except ValueError as exc:
@@ -1017,7 +1061,7 @@ def student_dashboard(
         latest_report=container.report_service.latest(student_profile_id),
         recent_mistakes=container.mistake_service.list_records(student_profile_id)[:6],
         recent_sessions=container.chat_service.list_sessions(student_profile_id)[:6],
-        available_topics=_topics_for_context(user, profile.textbook_id),
+        available_topics=_topics_for_student_profile(user, profile),
     )
 
 
@@ -1029,7 +1073,7 @@ def run_diagnosis(
 ) -> DiagnosisResponse:
     user = current_user(x_session_token)
     profile = require_student_profile(student_profile_id, user)
-    require_topic(request.target_topic_id, user=user, textbook_id=profile.textbook_id)
+    require_student_topic(request.target_topic_id, user, profile)
     diagnosis = DiagnosisRequest(
         student_id=str(student_profile_id),
         target_topic_id=request.target_topic_id,
@@ -1046,17 +1090,33 @@ def run_practice(
 ) -> PracticeResponse:
     user = current_user(x_session_token)
     profile = require_student_profile(student_profile_id, user)
-    require_topic(request.topic_id, user=user, textbook_id=profile.textbook_id)
-    practice = PracticeRequest(
-        student_id=str(student_profile_id),
-        topic_id=request.topic_id,
-        current_mastery=profile.mastery,
-        recent_question_ids=[],
-    )
-    try:
-        return container.practice_service.recommend_next_question(practice)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    selected_topic = require_student_topic(request.topic_id, user, profile)
+    all_topics = _topics_for_student_profile(user, profile)
+    all_topic_ids = {t.id for t in all_topics}
+    topic_ids_to_try = [selected_topic.id]
+    for t in all_topics:
+        if t.parent_id == selected_topic.id and t.id not in topic_ids_to_try:
+            topic_ids_to_try.append(t.id)
+    child_ids = container.repository.descendant_topic_ids(request.topic_id)
+    for cid in child_ids:
+        if cid in all_topic_ids and cid not in topic_ids_to_try:
+            topic_ids_to_try.append(cid)
+    last_error = None
+    for tid in topic_ids_to_try:
+        practice = PracticeRequest(
+            student_id=str(student_profile_id),
+            topic_id=tid,
+            current_mastery=profile.mastery,
+            recent_question_ids=[],
+            grade_level=selected_topic.grade_level or profile.grade_level or "",
+            subject=selected_topic.subject or "",
+        )
+        try:
+            return container.practice_service.recommend_next_question(practice)
+        except ValueError as exc:
+            last_error = exc
+            continue
+    raise HTTPException(status_code=404, detail=str(last_error) if last_error else "当前知识点暂无可用题目，请切换知识点或联系老师补题")
 
 
 @router.post("/students/{student_profile_id}/practice/submit", response_model=PracticeSubmissionResponse)
@@ -1152,7 +1212,7 @@ def generate_student_report(
 ) -> ReportRecordView:
     user = current_user(x_session_token)
     profile = require_student_profile(student_profile_id, user)
-    require_topic(request.target_topic_id, user=user, textbook_id=profile.textbook_id)
+    require_student_topic(request.target_topic_id, user, profile)
     report = container.report_service.generate(
         ReportRequest(
             student_id=str(student_profile_id),
@@ -1226,9 +1286,22 @@ def send_chat_message(
 ) -> ChatTurnResponse:
     user = current_user(x_session_token)
     require_chat_session(session_id, user)
-    require_topic(request.topic_id, user=user)
+    require_optional_topic(request.topic_id, user=user)
     try:
         return container.chat_service.send_message(session_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.put("/chat/messages/{message_id}/favorite", response_model=ChatMessageView)
+def favorite_chat_message(
+    message_id: int,
+    request: ChatFavoriteRequest,
+    x_session_token: str | None = Header(default=None),
+) -> ChatMessageView:
+    user = current_user(x_session_token)
+    try:
+        return container.chat_service.set_message_favorite(message_id, user.id, request.is_favorite)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 

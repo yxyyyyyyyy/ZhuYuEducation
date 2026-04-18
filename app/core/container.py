@@ -79,7 +79,8 @@ class ServiceContainer:
         self.llm_service = llm_service
 
         init_database()
-        self._seed_database()
+        if os.getenv("SEED_ENABLED", "").strip().lower() in ("1", "true", "yes"):
+            self._seed_database()
 
     def _seed_database(self) -> None:
         self._seed_admin()

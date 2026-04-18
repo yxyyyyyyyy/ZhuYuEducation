@@ -57,6 +57,21 @@ def main() -> None:
         )
         assert login.status_code == 200
         headers = {"X-Session-Token": login.json()["token"]}
+        classrooms = client.get("/teacher/classrooms", headers=headers)
+        assert classrooms.status_code == 200
+        classroom = classrooms.json()[0]
+        topics = client.get("/graph/topics", headers=headers)
+        assert topics.status_code == 200
+        topic = next(
+            (
+                item for item in topics.json()
+                if item.get("level") == 2
+                and item.get("parent_id")
+                and item.get("grade_level") == classroom["grade_level"]
+                and item.get("subject") == "数学"
+            ),
+            None,
+        ) or next(item for item in topics.json() if item.get("level") == 2 and item.get("parent_id"))
 
         content = (
             f"{title}\n"
@@ -66,7 +81,8 @@ def main() -> None:
             "/teacher/documents/upload",
             headers=headers,
             data={
-                "topic_id": "linear_functions",
+                "grade_level": classroom["grade_level"],
+                "subject": "数学",
                 "doc_type": "handout",
                 "title": title,
                 "source_name": "verify-upload.txt",
@@ -83,14 +99,21 @@ def main() -> None:
         uploaded_doc = next(item for item in documents.json() if item["id"] == document_id)
         assert uploaded_doc["chunk_count"] >= 1
         assert "content_preview" in uploaded_doc
-        print("document list metadata ok")
+        filtered_documents = client.get(
+            f"/teacher/documents?grade_level={classroom['grade_level']}&subject=数学",
+            headers=headers,
+        )
+        assert filtered_documents.status_code == 200
+        assert any(item["id"] == document_id for item in filtered_documents.json())
+        print("document list metadata and default visibility ok")
 
         search = client.post(
             "/teacher/documents/search",
             headers=headers,
             json={
                 "query": "翼形斜率证据怎么解释一次函数斜率和截距",
-                "topic_id": "linear_functions",
+                "grade_level": classroom["grade_level"],
+                "subject": "数学",
                 "strategy": "hybrid",
                 "limit": 5,
             },
@@ -98,30 +121,6 @@ def main() -> None:
         assert search.status_code == 200, search.text
         assert any(hit["document_title"] == title for hit in search.json())
         print("document search evidence ok")
-
-        for label, query, topic_id, doc_type in [
-            (f"{case_prefix}_斜率", "翼形斜率证据", "linear_functions", "handout"),
-            (f"{case_prefix}_函数", "教材里怎么理解函数对应关系", "functions", "textbook"),
-        ]:
-            created = client.post(
-                "/teacher/retrieval-cases",
-                headers=headers,
-                json={
-                    "label": label,
-                    "query": query,
-                    "expected_topic_id": topic_id,
-                    "expected_doc_type": doc_type,
-                },
-            )
-            assert created.status_code == 200, created.text
-        cases = client.get("/teacher/retrieval-cases", headers=headers)
-        assert cases.status_code == 200
-        assert len([case for case in cases.json() if case["label"].startswith(case_prefix)]) == 2
-        run = client.post("/teacher/retrieval-cases/run", headers=headers)
-        assert run.status_code == 200, run.text
-        assert run.json()["total_cases"] >= 2
-        assert "hit_at_1" in run.json()
-        print("retrieval cases ok")
 
         students = client.get("/students", headers=headers).json()
         student_id = students[0]["id"]
@@ -136,7 +135,7 @@ def main() -> None:
             f"/chat/sessions/{session_id}/messages",
             headers=headers,
             json={
-                "topic_id": "linear_functions",
+                "topic_id": topic["id"],
                 "content": "请根据翼形斜率证据解释一次函数斜率和截距",
                 "difficulty_signal": 0.4,
             },

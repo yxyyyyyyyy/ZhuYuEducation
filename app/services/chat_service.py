@@ -78,12 +78,6 @@ class ChatService:
             return [self._message_view(item) for item in rows]
 
     def send_message(self, session_id: int, request: ChatMessageSend) -> ChatTurnResponse:
-        topic = self.graph_service.get_topic(request.topic_id)
-        mode = TutorMode.example_based if request.difficulty_signal > 0.75 else TutorMode.socratic
-        fallback_text = (
-            f"你可以先回到“{topic.name}”的核心目标：{topic.learning_objectives[0]}。"
-            f" 常见误区是：{topic.common_mistakes[0]}。"
-        )
         with sql_repository.session() as session:
             owner_id = session.execute(
                 select(StudentProfileORM.user_id)
@@ -93,14 +87,31 @@ class ChatService:
         if owner_id is None:
             raise ValueError("chat session not found")
 
-        evidence_docs = self.rag_service.retrieve(request.topic_id, request.content, limit=3, user_id=owner_id)
-        assistant_text = self.llm_service.generate_tutor_reply(
-            topic_name=topic.name,
-            mode=mode,
-            user_message=request.content,
-            evidence=evidence_docs,
-            fallback_text=fallback_text,
-        )
+        mode = TutorMode.example_based if request.difficulty_signal > 0.75 else TutorMode.socratic
+        if request.topic_id:
+            topic = self.graph_service.get_topic(request.topic_id)
+            fallback_text = (
+                f"你可以先回到「{topic.name}」的核心目标：{topic.learning_objectives[0]}。"
+                f" 常见误区是：{topic.common_mistakes[0]}。"
+            )
+            evidence_docs = self.rag_service.retrieve(request.topic_id, request.content, limit=3, user_id=owner_id)
+            assistant_text = self.llm_service.generate_tutor_reply(
+                topic_name=topic.name,
+                mode=mode,
+                user_message=request.content,
+                evidence=evidence_docs,
+                fallback_text=fallback_text,
+            )
+        else:
+            fallback_text = "你可以直接描述题目、概念、文章片段或学习困难，我会先帮你拆问题，再给出下一步做法。"
+            evidence_docs = self.rag_service.retrieve("", request.content, limit=3, user_id=owner_id)
+            assistant_text = self.llm_service.generate_tutor_reply(
+                topic_name="通用学习话题",
+                mode=mode,
+                user_message=request.content,
+                evidence=evidence_docs,
+                fallback_text=fallback_text,
+            )
 
         with sql_repository.session() as session:
             chat = session.execute(select(ChatSessionORM).where(ChatSessionORM.id == session_id)).scalars().first()
@@ -128,6 +139,20 @@ class ChatService:
                 history=[self._message_view(item) for item in history],
             )
 
+    def set_message_favorite(self, message_id: int, user_id: int, is_favorite: bool) -> ChatMessageView:
+        with sql_repository.session() as session:
+            message = session.execute(
+                select(ChatMessageORM)
+                .join(ChatSessionORM, ChatMessageORM.session_id == ChatSessionORM.id)
+                .join(StudentProfileORM, ChatSessionORM.student_profile_id == StudentProfileORM.id)
+                .where(ChatMessageORM.id == message_id, StudentProfileORM.user_id == user_id)
+            ).scalars().first()
+            if not message:
+                raise ValueError("chat message not found")
+            message.is_favorite = 1 if is_favorite else 0
+            session.flush()
+            return self._message_view(message)
+
     def _session_view(self, row: ChatSessionORM) -> ChatSessionView:
         return ChatSessionView(
             id=row.id,
@@ -144,6 +169,7 @@ class ChatService:
             content=row.content,
             created_at=row.created_at,
             citations=[self._citation_view(item) for item in (row.citations or [])],
+            is_favorite=bool(getattr(row, "is_favorite", 0)),
         )
 
     def _citation_payload(self, doc) -> dict:

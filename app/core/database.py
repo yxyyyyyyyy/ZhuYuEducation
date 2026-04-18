@@ -93,6 +93,7 @@ class ChatMessageORM(Base):
     role: Mapped[str] = mapped_column(String(20))
     content: Mapped[str] = mapped_column(Text)
     citations: Mapped[list] = mapped_column(JSON, default=list)
+    is_favorite: Mapped[int] = mapped_column(Integer, default=0, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -246,6 +247,8 @@ class QuestionBankORM(Base):
     tags: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="approved", index=True)
     source: Mapped[str] = mapped_column(String(40), default="seed")
+    grade_level: Mapped[str] = mapped_column(String(40), default="", index=True)
+    subject: Mapped[str] = mapped_column(String(40), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -382,6 +385,11 @@ def _migrate_sqlite_schema() -> None:
         if "textbook_id" not in profile_columns:
             migration_sql.append("ALTER TABLE student_profiles ADD COLUMN textbook_id INTEGER")
 
+    if "chat_messages" in existing_tables:
+        chat_message_columns = {column["name"] for column in inspector.get_columns("chat_messages")}
+        if "is_favorite" not in chat_message_columns:
+            migration_sql.append("ALTER TABLE chat_messages ADD COLUMN is_favorite INTEGER DEFAULT 0")
+
     if "classrooms" in existing_tables:
         classroom_columns = {column["name"] for column in inspector.get_columns("classrooms")}
         if "school_id" not in classroom_columns:
@@ -433,6 +441,10 @@ def _migrate_sqlite_schema() -> None:
             migration_sql.append("ALTER TABLE question_bank ADD COLUMN status VARCHAR(20) DEFAULT 'approved'")
         if "source" not in question_columns:
             migration_sql.append("ALTER TABLE question_bank ADD COLUMN source VARCHAR(40) DEFAULT 'seed'")
+        if "grade_level" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN grade_level VARCHAR(40) DEFAULT ''")
+        if "subject" not in question_columns:
+            migration_sql.append("ALTER TABLE question_bank ADD COLUMN subject VARCHAR(40) DEFAULT ''")
 
     if "practice_records" in existing_tables:
         practice_columns = {column["name"] for column in inspector.get_columns("practice_records")}
@@ -499,6 +511,22 @@ def _migrate_sqlite_schema() -> None:
             connection.exec_driver_sql(
                 "CREATE INDEX IF NOT EXISTS idx_question_bank_difficulty_level ON question_bank(difficulty_level)"
             )
+            connection.exec_driver_sql(
+                "UPDATE question_bank SET grade_level = COALESCE(("
+                "SELECT kn.grade_level FROM knowledge_nodes kn "
+                "WHERE kn.is_deleted = 0 "
+                "AND (kn.node_key = question_bank.knowledge_l2_id OR kn.node_key = question_bank.topic_id) "
+                "LIMIT 1"
+                "), '') WHERE grade_level IS NULL OR grade_level = ''"
+            )
+            connection.exec_driver_sql(
+                "UPDATE question_bank SET subject = COALESCE(("
+                "SELECT kn.subject FROM knowledge_nodes kn "
+                "WHERE kn.is_deleted = 0 "
+                "AND (kn.node_key = question_bank.knowledge_l2_id OR kn.node_key = question_bank.topic_id) "
+                "LIMIT 1"
+                "), '') WHERE subject IS NULL OR subject = ''"
+            )
         if "users" in existing_tables:
             connection.exec_driver_sql("UPDATE users SET role = 'student' WHERE role IS NULL OR role = ''")
             connection.exec_driver_sql("UPDATE users SET role = 'teacher' WHERE email = 'demo@zhuyu.local'")
@@ -518,6 +546,8 @@ def _migrate_sqlite_schema() -> None:
             connection.exec_driver_sql("UPDATE practice_records SET evaluation_status = 'graded' WHERE evaluation_status IS NULL OR evaluation_status = ''")
             connection.exec_driver_sql("UPDATE practice_records SET review_reason = '' WHERE review_reason IS NULL")
             connection.exec_driver_sql("UPDATE practice_records SET mastery_applied = 1 WHERE mastery_applied IS NULL")
+        if "chat_messages" in existing_tables:
+            connection.exec_driver_sql("UPDATE chat_messages SET is_favorite = 0 WHERE is_favorite IS NULL")
         if "announcements" in existing_tables:
             connection.exec_driver_sql("UPDATE announcements SET content_html = content WHERE content_html IS NULL OR content_html = ''")
             connection.exec_driver_sql("UPDATE announcements SET summary = substr(content, 1, 160) WHERE summary IS NULL OR summary = ''")

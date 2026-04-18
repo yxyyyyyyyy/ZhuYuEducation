@@ -1415,13 +1415,13 @@
         <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
           <div>
             <h2>📚 题库列表</h2>
-            <p>按年级、学科和知识点浏览已入库题目</p>
+            <p>先选择年级，再按学科和知识点浏览已入库题目</p>
           </div>
           <button id="reloadQuestionBankButton" class="btn btn-ghost btn-sm">🔄 刷新</button>
         </div>
-        <div id="qbTabs" class="qb-tabs"></div>
         <div class="qb-filter-bar">
-          <select id="qbGradeFilter"><option value="">全部年级</option></select>
+          <select id="qbGradeFilter"><option value="">请选择年级</option></select>
+          <select id="qbSubjectFilter" style="display:none;"><option value="">全部学科</option></select>
           <select id="qbTypeFilter">
             <option value="">全部题型</option>
             <option value="blank">填空题</option>
@@ -1440,7 +1440,7 @@
           <button id="qbResetButton" class="btn btn-ghost btn-sm">重置</button>
         </div>
         <div id="qbStatsBar" class="qb-stats-bar"></div>
-        <div id="questionBankView" class="qb-empty">加载中...</div>
+        <div id="questionBankView" class="qb-empty">请先选择年级，再按学科筛选题目</div>
       </section>
 
       <section class="page" data-page="question-import">
@@ -1622,6 +1622,6 @@
     </div>
   </div>
 
-  <script src="/static/teacher.js?v=20260417c"></script>
+  <script src="/static/teacher.js?v=20260417d"></script>
 </body>
 </html>

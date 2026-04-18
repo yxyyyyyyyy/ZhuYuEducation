@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import List, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from app.core.database import PracticeRecordORM
 from app.domain.models import DifficultyBand, PracticeRequest, PracticeResponse, Question
@@ -20,12 +20,14 @@ class PracticeService:
         mastery_value = mastery.mastery if mastery else 0.0
         band = self._select_band(mastery_value)
         target_difficulty = self._band_target(band)
+        grade_level = request.grade_level
+        subject = request.subject
 
         prerequisite_topic = self._find_weak_prerequisite(request.topic_id, request.current_mastery)
         if prerequisite_topic:
             prereq_mastery = request.current_mastery.get(prerequisite_topic)
             prereq_value = prereq_mastery.mastery if prereq_mastery else 0.0
-            prereq_questions = self._get_approved_questions(prerequisite_topic)
+            prereq_questions = self._get_approved_questions(prerequisite_topic, grade_level, subject)
             if prereq_questions:
                 recent_ids = self._get_recent_question_ids(request.student_id, limit=10)
                 candidates = [q for q in prereq_questions if q.id not in recent_ids]
@@ -47,13 +49,13 @@ class PracticeService:
 
         candidates = [
             question
-            for question in self._get_approved_questions(request.topic_id)
+            for question in self._get_approved_questions(request.topic_id, grade_level, subject)
             if question.id not in recent_ids
         ]
         if not candidates:
-            candidates = self._get_approved_questions(request.topic_id)
+            candidates = self._get_approved_questions(request.topic_id, grade_level, subject)
         if not candidates:
-            raise ValueError("no approved question found")
+            raise ValueError("当前知识点暂无可用题目，请切换知识点或联系老师补题")
 
         if spaced_ids and request.topic_id:
             spaced_questions = [q for q in candidates if q.id in spaced_ids]
@@ -162,28 +164,52 @@ class PracticeService:
         except Exception:
             return set()
 
-    def _get_approved_questions(self, topic_id: str) -> list[Question]:
+    def _get_approved_questions(self, topic_id: str, grade_level: str = "", subject: str = "") -> list[Question]:
         topic_ids = [topic_id] + self.repository.descendant_topic_ids(topic_id)
         questions = {}
-        for candidate_topic_id in topic_ids:
-            questions.update({
-                question.id: question for question in self.repository.list_questions_by_topic(candidate_topic_id)
-            })
+        if not grade_level and not subject:
+            for candidate_topic_id in topic_ids:
+                questions.update({
+                    question.id: question for question in self.repository.list_questions_by_topic(candidate_topic_id)
+                })
         try:
             from app.core.database import QuestionBankORM
             with sql_repository.session() as session:
-                rows = session.execute(
-                    select(QuestionBankORM).where(
+                stmt = select(QuestionBankORM).where(
+                    or_(
                         QuestionBankORM.topic_id.in_(topic_ids),
-                        QuestionBankORM.status == "approved",
-                    )
-                ).scalars().all()
+                        QuestionBankORM.knowledge_l2_id.in_(topic_ids),
+                    ),
+                    QuestionBankORM.status == "approved",
+                )
+                if grade_level:
+                    stmt = stmt.where(or_(
+                        QuestionBankORM.grade_level == grade_level,
+                        QuestionBankORM.grade_level == "",
+                        QuestionBankORM.grade_level.is_(None),
+                    ))
+                if subject:
+                    stmt = stmt.where(or_(
+                        QuestionBankORM.subject == subject,
+                        QuestionBankORM.subject == "",
+                        QuestionBankORM.subject.is_(None),
+                    ))
+                rows = session.execute(stmt).scalars().all()
                 for row in rows:
                     if self._is_verification_question(row):
                         continue
                     questions[row.external_id] = self._question_from_db_row(row)
         except Exception:
             pass
+        if grade_level or subject:
+            filtered = {}
+            for qid, q in questions.items():
+                if grade_level and q.grade_level and q.grade_level != grade_level:
+                    continue
+                if subject and q.subject and q.subject != subject:
+                    continue
+                filtered[qid] = q
+            questions = filtered
         return list(questions.values())
 
     def _selection_key(self, question: Question, target_difficulty: float) -> tuple[int, float, str]:
@@ -220,6 +246,8 @@ class PracticeService:
             blank_count=row.blank_count or 1,
             score_points=score_points,
             tags=row.tags or [],
+            grade_level=getattr(row, "grade_level", "") or "",
+            subject=getattr(row, "subject", "") or "",
         )
 
     def _get_consecutive_correct(self, student_id: str, topic_id: str) -> int:

@@ -36,9 +36,17 @@ def main() -> None:
     assert "班级邀请码" in student_html
     assert "AI 推荐练习" in student_html
     assert "知识图谱" in student_html
-    assert 'data-page="graph"' in student_html
+    assert 'data-page="graph"' not in student_html
     assert "knowledgeGraphPreview" in student_html
+    assert "knowledgeGraphView" not in student_html
     assert "reportHistoryView" in student_html
+    assert "studentSelect" not in student_html
+    assert "studentScopeLabel" in student_html
+    assert "targetSubjectId" in student_html
+    assert "practiceSubjectId" in student_html
+    assert "chatSubjectId" not in student_html
+    assert "chatTopicId" not in student_html
+    assert "quick-prompt-bar" in student_html
 
     teacher_page = client.get("/teacher")
     assert teacher_page.status_code == 200
@@ -47,10 +55,9 @@ def main() -> None:
     assert "教师注册" not in teacher_html
     assert "学校班级" in teacher_html
     assert "上传资料" in teacher_html
-    assert "评测问题集" in teacher_html
     assert "uploadDocumentFile" in teacher_html
     assert 'data-page="practice-review"' in teacher_html
-    assert "downloadTemplateButton" in teacher_html
+    assert "downloadExcelTemplateButton" in teacher_html
 
     admin_page = client.get("/admin")
     assert admin_page.status_code == 200
@@ -65,6 +72,10 @@ def main() -> None:
     assert "--accent" in css.text
     assert ".immersive-practice-shell" in css.text
     assert "Enterprise UI refresh" in css.text
+    assert ".kg-network-svg" in css.text
+    assert ".kg-tooltip" in css.text
+    assert ".chat-row" in css.text
+    assert ".typing-dots" in css.text
 
     home_js = client.get("/static/home.js")
     assert home_js.status_code == 200
@@ -77,10 +88,17 @@ def main() -> None:
     assert "openQuestionById" in js.text
     assert "renderPractice" in js.text
     assert "studentJudgmentOption" in js.text
+    assert "renderSvgKnowledgeGraph" in js.text
+    assert "showTopicDetail" in js.text
+    assert "favoriteChatMessage" in js.text
+    assert "当前知识点暂无可用题目" in js.text
+    assert "stripMarkdown" in js.text
+    assert "knowledgeGraphView" not in js.text
+    assert 'target_subject: "数学"' not in js.text
 
     teacher_js = client.get("/static/teacher.js")
     assert teacher_js.status_code == 200
-    assert "downloadCsvTemplate" in teacher_js.text
+    assert "downloadExcelTemplate" in teacher_js.text
     assert "resolvePracticeReview" in teacher_js.text
     assert "/auth/register/teacher" not in teacher_js.text
 

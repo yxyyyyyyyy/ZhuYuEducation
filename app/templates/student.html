@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>祝余教育 - 学生端</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎓</text></svg>">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/tdesign.css">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -34,7 +35,7 @@
     </div>
   </div>
 
-  <div id="appMain" class="layout-shell" style="display:none;">
+  <div id="appMain" class="layout-shell student-shell" style="display:none;">
     <aside class="layout-sidebar">
       <div class="sidebar-brand">
         <div class="brand-label">Zhuyu Education</div>
@@ -49,9 +50,6 @@
           <div class="nav-group-label">学习</div>
           <button class="nav-item active" data-page="profile">
             <span class="nav-icon">👤</span><span>档案总览</span>
-          </button>
-          <button class="nav-item" data-page="graph">
-            <span class="nav-icon">🔗</span><span>知识图谱</span>
           </button>
           <button class="nav-item" data-page="diagnosis">
             <span class="nav-icon">🔍</span><span>知识诊断</span>
@@ -70,10 +68,8 @@
           </button>
         </div>
         <div class="sidebar-nav-group">
-          <div class="nav-group-label">设置</div>
-          <div style="padding:4px 12px;">
-            <select id="studentSelect" class="sidebar-select"><option>加载中...</option></select>
-          </div>
+          <div class="nav-group-label">档案</div>
+          <div id="studentScopeLabel" class="sidebar-profile-chip">登录后加载档案</div>
         </div>
       </div>
       <div class="sidebar-footer">
@@ -99,7 +95,7 @@
         <section class="panel" style="margin-bottom:18px;">
           <div class="panel-header">
             <h3>🔗 知识图谱</h3>
-            <button id="openGraphButton" class="ghost-button">打开完整图谱</button>
+            <p>点击学科展开二级知识点</p>
           </div>
           <div id="knowledgeGraphPreview" class="content-view empty-state">登录后加载</div>
         </section>
@@ -111,32 +107,15 @@
         </section>
       </section>
 
-      <section class="page-section" data-page="graph">
-        <div class="page-header">
-          <h2>🔗 知识图谱</h2>
-          <p>看清知识点之间的前置关系和当前掌握度</p>
-        </div>
-        <section class="panel">
-          <div class="panel-header">
-            <h3>完整图谱</h3>
-            <div class="inline-actions">
-              <p>点击箭头或「展开」查看下级知识点</p>
-              <button id="expandGraphButton" class="ghost-button">全部展开</button>
-              <button id="collapseGraphButton" class="ghost-button">全部收起</button>
-            </div>
-          </div>
-          <div id="knowledgeGraphView" class="content-view empty-state">登录后加载</div>
-        </section>
-      </section>
-
       <section class="page-section" data-page="diagnosis">
         <div class="page-header">
           <h2>🔍 知识诊断</h2>
           <p>选择目标知识点，系统分析你的薄弱环节</p>
         </div>
         <section class="panel">
-          <div class="inline-actions" style="margin-bottom:16px;">
-            <select id="targetTopicId"></select>
+          <div class="topic-picker-grid" style="margin-bottom:16px;">
+            <label><span>学科</span><select id="targetSubjectId"></select></label>
+            <label><span>知识点</span><select id="targetTopicId"></select></label>
             <button id="diagnosisButton" class="primary-button">开始诊断</button>
           </div>
           <div id="diagnosisView" class="content-view empty-state">选择知识点后点击「开始诊断」</div>
@@ -151,7 +130,11 @@
         <section class="panel" style="margin-bottom:18px;">
           <div class="panel-header">
             <h3>推荐题目</h3>
-            <button id="practiceButton" class="primary-button">推荐下一题 →</button>
+            <div class="topic-picker-inline">
+              <label><span>学科</span><select id="practiceSubjectId"></select></label>
+              <label><span>知识点</span><select id="practiceTopicId"></select></label>
+              <button id="practiceButton" class="primary-button">推荐下一题 →</button>
+            </div>
           </div>
           <div id="practiceView" class="content-view empty-state">点击「推荐下一题」获取题目</div>
         </section>
@@ -224,8 +207,13 @@
           <div id="chatHistory" class="chat-history">
             <div class="empty-state">发送消息后开始对话</div>
           </div>
+          <div class="quick-prompt-bar">
+            <button class="ghost-button quick-prompt" data-prompt="请帮我翻译一段文言文，并说明重点字词。">文言文翻译</button>
+            <button class="ghost-button quick-prompt" data-prompt="请总结阅读理解题的审题和答题技巧。">阅读理解技巧</button>
+            <button class="ghost-button quick-prompt" data-prompt="请按步骤讲解我刚才做错的题。">错题讲解</button>
+            <button class="ghost-button quick-prompt" data-prompt="请给我安排一组同类题训练。">同类题训练</button>
+          </div>
           <div class="chat-composer">
-            <label><span>知识点</span><select id="chatTopicId"></select></label>
             <textarea id="chatInput" rows="3" placeholder="例如：一次函数的斜率和截距怎么理解？"></textarea>
             <button id="sendChatButton" class="primary-button">发送问题 →</button>
           </div>
@@ -240,7 +228,8 @@
         <section class="panel">
           <div class="panel-header">
             <h3>阶段报告</h3>
-            <div class="inline-actions">
+            <div class="topic-picker-inline">
+              <select id="reportSubjectId"></select>
               <select id="reportTopicId"></select>
               <button id="generateReportButton" class="primary-button">生成报告 →</button>
             </div>
@@ -260,6 +249,6 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/tdesign-web-components@1.2.5/dist/TDesign%20Web%20Components.min.js"></script>
-  <script src="/static/student.js"></script>
+  <script src="/static/student.js?v=20260417g"></script>
 </body>
 </html>

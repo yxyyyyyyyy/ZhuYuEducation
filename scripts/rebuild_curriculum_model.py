@@ -99,6 +99,11 @@ def _parse_args() -> argparse.Namespace:
         default=1,
         help="并发调用 LLM 的线程数（默认 1）",
     )
+    parser.add_argument(
+        "--clear-rag",
+        action="store_true",
+        help="同时清空教师资料、切块向量和检索评测集（默认保留）",
+    )
     parser.set_defaults(generate_questions=True, strict_llm=True)
     return parser.parse_args()
 
@@ -588,7 +593,7 @@ def main() -> None:
             print("No schools found, skip rebuild.")
             return
 
-        # 全量清空题库与学习过程数据（保留账号、学校、班级、学生档案）
+        # 全量清空题库与学习过程数据（保留账号、学校、班级、学生档案；默认保留 RAG 资料和向量）
         session.execute(delete(QuestionBankORM))
         session.execute(delete(PracticeRecordORM))
         session.execute(delete(MistakeRecordORM))
@@ -596,10 +601,11 @@ def main() -> None:
         session.execute(delete(StudentMasteryORM))
         session.execute(delete(ChatMessageORM))
         session.execute(delete(ChatSessionORM))
-        session.execute(delete(KnowledgeChunkORM))
-        session.execute(delete(KnowledgeDocumentORM))
-        session.execute(delete(RagDocumentORM))
-        session.execute(delete(RetrievalCaseORM))
+        if args.clear_rag:
+            session.execute(delete(KnowledgeChunkORM))
+            session.execute(delete(KnowledgeDocumentORM))
+            session.execute(delete(RagDocumentORM))
+            session.execute(delete(RetrievalCaseORM))
 
         # 清空教材树并重建
         session.execute(delete(KnowledgeNodeORM))

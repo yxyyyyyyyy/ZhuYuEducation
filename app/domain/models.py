@@ -57,6 +57,8 @@ class Question(BaseModel):
     score_points: List[ScorePoint] = Field(default_factory=list)
     knowledge_tiers: List[str] = Field(default_factory=list)
     tags: List[str] = Field(default_factory=list)
+    grade_level: str = ""
+    subject: str = ""
 
 
 class QuestionOption(BaseModel):
@@ -197,6 +199,8 @@ class PracticeRequest(BaseModel):
     topic_id: str
     current_mastery: Dict[str, TopicMastery]
     recent_question_ids: List[str] = Field(default_factory=list)
+    grade_level: str = ""
+    subject: str = ""
 
 
 class PracticeResponse(BaseModel):
@@ -297,7 +301,7 @@ class ChatSessionView(BaseModel):
 
 
 class ChatMessageSend(BaseModel):
-    topic_id: str = Field(min_length=1, max_length=120)
+    topic_id: str | None = Field(max_length=120, default=None)
     content: str = Field(min_length=1, max_length=4000)
     difficulty_signal: float = Field(ge=0.0, le=1.0, default=0.5)
 
@@ -308,12 +312,17 @@ class ChatMessageView(BaseModel):
     content: str
     created_at: datetime
     citations: List[CitationEvidence] = Field(default_factory=list)
+    is_favorite: bool = False
 
 
 class ChatTurnResponse(BaseModel):
     session: ChatSessionView
     assistant: ChatMessageView
     history: List[ChatMessageView]
+
+
+class ChatFavoriteRequest(BaseModel):
+    is_favorite: bool = True
 
 
 class ReportRequest(BaseModel):
@@ -520,7 +529,9 @@ class TeacherStudentSummary(BaseModel):
     overall_mastery: float
     latest_report_at: Optional[datetime] = None
     recent_mistake_count: int = 0
+    recent_practice_count: int = 0
     recent_practice_accuracy: float = 0.0
+    pending_review_count: int = 0
     subject_summaries: List["TeacherStudentSubjectSummary"] = Field(default_factory=list)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -108,10 +109,11 @@ class KnowledgeRepository:
                             "tutoring_tips": ["用例题拆解关键步骤，再做同类变式"],
                         })
                         existing_ids.add(topic_id)
-                    question_id = f"q_{topic_id}_01"
-                    if question_id not in existing_question_ids:
-                        self._payload["questions"].append(self._sample_question(question_id, topic_id, grade_name, subject, core))
-                        existing_question_ids.add(question_id)
+                    if os.getenv("SEED_ENABLED", "").strip().lower() in ("1", "true", "yes"):
+                        question_id = f"q_{topic_id}_01"
+                        if question_id not in existing_question_ids:
+                            self._payload["questions"].append(self._sample_question(question_id, topic_id, grade_name, subject, core))
+                            existing_question_ids.add(question_id)
 
     def _subject_code(self, subject: str) -> str:
         return {"数学": "math", "语文": "chinese", "英语": "english", "物理": "physics", "化学": "chemistry"}.get(subject, "general")

@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.core.container import container  # noqa: E402
-from app.core.database import PracticeRecordORM, QuestionBankORM, StudentMasteryORM, StudentProfileORM  # noqa: E402
+from app.core.database import ClassroomEnrollmentORM, PracticeRecordORM, QuestionBankORM, StudentMasteryORM, StudentProfileORM  # noqa: E402
 from app.main import app  # noqa: E402
 from app.repositories.sql_repository import sql_repository  # noqa: E402
 
@@ -24,6 +24,7 @@ client = TestClient(app)
 def cleanup(student_id: int | None, question_ids: list[str]) -> None:
     with sql_repository.session() as session:
         if student_id:
+            session.execute(delete(ClassroomEnrollmentORM).where(ClassroomEnrollmentORM.student_profile_id == student_id))
             session.execute(delete(PracticeRecordORM).where(PracticeRecordORM.student_profile_id == student_id))
             session.execute(delete(StudentMasteryORM).where(StudentMasteryORM.student_profile_id == student_id))
             session.execute(delete(StudentProfileORM).where(StudentProfileORM.id == student_id))
@@ -36,14 +37,34 @@ def main() -> None:
     assert login.status_code == 200
     headers = {"X-Session-Token": login.json()["token"]}
 
+    classrooms = client.get("/teacher/classrooms", headers=headers)
+    assert classrooms.status_code == 200
+    classroom = classrooms.json()[0]
+    topics = client.get("/graph/topics", headers=headers)
+    assert topics.status_code == 200
+    l2_topic = next(
+        (
+            item for item in topics.json()
+            if item.get("level") == 2
+            and item.get("parent_id")
+            and item.get("grade_level") == classroom["grade_level"]
+            and item.get("subject") == "数学"
+        ),
+        None,
+    ) or next(item for item in topics.json() if item.get("level") == 2 and item.get("parent_id"))
+
     created = client.post(
         "/students",
         headers=headers,
         json={
             "name": f"题型复核验证{uuid.uuid4().hex[:6]}",
-            "grade_level": "七年级",
-            "target_subject": "数学",
-            "target_topic_id": "functions",
+            "grade_level": classroom["grade_level"],
+            "target_subject": l2_topic["subject"],
+            "target_topic_id": l2_topic["id"],
+            "school_id": classroom["school_id"],
+            "classroom_id": classroom["id"],
+            "teacher_user_id": classroom["teacher_user_id"],
+            "textbook_id": classroom["textbook_id"],
         },
     )
     assert created.status_code == 200
@@ -63,9 +84,11 @@ def main() -> None:
                 "questions": [
                     {
                         "id": choice_id,
-                        "topic_id": "functions",
+                        "knowledge_l1_id": l2_topic["parent_id"],
+                        "knowledge_l2_id": l2_topic["id"],
                         "stem": "在函数 y = 2x + 1 中，哪个量通常作为自变量？",
-                        "difficulty": 0.3,
+                        "difficulty_level": 2,
+                        "knowledge_tiers": ["基础知识点"],
                         "answer": "A",
                         "explanation": "x 是输入量，y 随 x 变化。",
                         "question_type": "choice",
@@ -79,9 +102,11 @@ def main() -> None:
                     },
                     {
                         "id": judgment_id,
-                        "topic_id": "linear_functions",
+                        "knowledge_l1_id": l2_topic["parent_id"],
+                        "knowledge_l2_id": l2_topic["id"],
                         "stem": "判断：一次函数 y=kx+b 中，k 表示斜率。",
-                        "difficulty": 0.35,
+                        "difficulty_level": 2,
+                        "knowledge_tiers": ["基础知识点"],
                         "answer": "正确",
                         "explanation": "k 是斜率，b 是截距。",
                         "question_type": "judgment",
@@ -89,9 +114,11 @@ def main() -> None:
                     },
                     {
                         "id": pending_id,
-                        "topic_id": "functions",
+                        "knowledge_l1_id": l2_topic["parent_id"],
+                        "knowledge_l2_id": l2_topic["id"],
                         "stem": "某出租车收费规则可表示为 y = 2x + 8，这里的 8 表示什么？",
-                        "difficulty": 0.6,
+                        "difficulty_level": 3,
+                        "knowledge_tiers": ["核心知识点"],
                         "answer": "8 表示起步价（固定费用）",
                         "explanation": "当 x=0 时仍需支付 8 元。",
                         "question_type": "blank",
@@ -155,26 +182,29 @@ def main() -> None:
         assert resolved.json()["score"] == 1.0
         print("teacher review resolve ok")
 
-        template = client.get("/teacher/question-bank/csv-template", headers=headers)
+        template = client.get(
+            f"/teacher/question-bank/excel-template?grade_level={classroom['grade_level']}&subject={l2_topic['subject']}",
+            headers=headers,
+        )
         assert template.status_code == 200
-        assert "选项" in template.text
-        assert "judgment" in template.text
-        assert "score_points" not in template.text or "得分点" in template.text
-        unauthorized_template = client.get("/teacher/question-bank/csv-template")
+        assert template.headers["content-type"].startswith("application/vnd.openxmlformats-officedocument")
+        unauthorized_template = client.get(
+            f"/teacher/question-bank/excel-template?grade_level={classroom['grade_level']}&subject={l2_topic['subject']}"
+        )
         assert unauthorized_template.status_code == 401
-        print("authenticated csv template ok")
+        print("authenticated excel template ok")
 
         teacher_page = client.get("/teacher")
         assert teacher_page.status_code == 200
         html = teacher_page.text
         assert 'data-page="practice-review"' in html
-        assert "downloadTemplateButton" in html
-        assert "tdesign-web-components@1.2.5" in html
+        assert "downloadExcelTemplateButton" in html
+        assert "excelFileInput" in html
         print("teacher markup ok")
 
         student_page = client.get("/student")
         assert student_page.status_code == 200
-        assert "tdesign-web-components@1.2.5" in student_page.text
+        assert "studentScopeLabel" in student_page.text
         student_js = client.get("/static/student.js")
         assert student_js.status_code == 200
         assert "studentJudgmentOption" in student_js.text

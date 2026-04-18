@@ -84,6 +84,7 @@ function hideModal() {
 function friendlySource(source) {
   const map = {
     ai_generated: "AI 生成",
+    ai_bootstrap: "AI 批量生成",
     seed: "系统内置",
     excel_import: "Excel 导入",
     csv_import: "CSV 导入",
@@ -299,7 +300,12 @@ function syncGenerateControls() {
   syncSelectorGroup("generate", { ...teacherScopeOptions, autoSelectFirst: false });
   syncSelectorGroup("excelImport", teacherScopeOptions);
   syncSelectorGroup("uploadDocument", teacherScopeOptions);
-  syncSelectorGroup("documentFilter", teacherScopeOptions);
+  syncSelectorGroup("documentFilter", {
+    ...teacherScopeOptions,
+    gradePlaceholder: hasClassrooms ? "全部年级" : "请先创建班级",
+    subjectPlaceholder: "全部学科",
+    autoSelectFirst: false,
+  });
   syncSelectorGroup("docSearch", teacherScopeOptions);
 
   ["generateGrade", "generateSubject", "generateTopicId", "generateCategory", "generateCount", "generateQuestionType"].forEach((id) => {
@@ -449,6 +455,8 @@ function renderStudentList(data) {
     const group = groups[key];
     const avgMastery = group.reduce((s, i) => s + (i.overall_mastery || 0), 0) / group.length;
     const avgAccuracy = group.reduce((s, i) => s + (i.recent_practice_accuracy || 0), 0) / group.length;
+    const practiceCount = group.reduce((s, i) => s + (i.recent_practice_count || 0), 0);
+    const pendingCount = group.reduce((s, i) => s + (i.pending_review_count || 0), 0);
     const masteryPct = (avgMastery * 100).toFixed(0);
     const accuracyPct = (avgAccuracy * 100).toFixed(0);
     const barClass = avgMastery < 0.4 ? "progress-low" : avgMastery < 0.7 ? "progress-mid" : "progress-high";
@@ -460,8 +468,10 @@ function renderStudentList(data) {
             <div class="class-group-title">${grade} · ${classroom}</div>
             <div class="class-group-meta">
               <span>👤 ${group.length} 人</span>
+              <span>📝 练习 ${practiceCount} 次</span>
               <span>📊 掌握度 ${masteryPct}%</span>
               <span>🎯 正确率 ${accuracyPct}%</span>
+              ${pendingCount ? `<span>🧾 待复核 ${pendingCount}</span>` : ""}
             </div>
           </div>
           <div class="class-group-actions">
@@ -489,6 +499,14 @@ function renderStudentList(data) {
                     <div class="student-inline-stat">
                       <strong>${formatPercent(item.recent_practice_accuracy)}</strong>
                       <span>正确率</span>
+                    </div>
+                    <div class="student-inline-stat">
+                      <strong>${item.recent_practice_count || 0}</strong>
+                      <span>练习</span>
+                    </div>
+                    <div class="student-inline-stat">
+                      <strong>${item.pending_review_count || 0}</strong>
+                      <span>待复核</span>
                     </div>
                   </div>
                 </div>
@@ -614,31 +632,40 @@ function renderPracticeAnalytics(data) {
 
 function renderQuestionBank(items) {
   state.qbItems = items;
-  const subjects = [...new Set(items.map((item) => item.subject).filter(Boolean))].sort();
-  const grades = sortGrades([...new Set(items.map((item) => item.grade_level).filter(Boolean))]);
+  const teacherGrades = getTeacherGrades();
+  const filteredByGrade = state.qbGrade ? items.filter((i) => i.grade_level === state.qbGrade) : [];
+  const subjects = state.qbGrade
+    ? [...new Set(filteredByGrade.map((item) => item.subject).filter(Boolean))].sort()
+    : [];
 
-  qs("qbTabs").innerHTML = ["全部", ...subjects].map((s) => {
-    const val = s === "全部" ? "" : s;
-    const active = state.qbSubject === val ? "active" : "";
-    const count = s === "全部" ? items.length : items.filter((i) => i.subject === s).length;
-    return `<button class="qb-tab ${active}" data-qb-subject="${val}">${s}（${count}）</button>`;
-  }).join("");
+  qs("qbGradeFilter").innerHTML = "<option value=''>请选择年级</option>" + teacherGrades.map((g) => `<option value="${g}" ${state.qbGrade === g ? "selected" : ""}>${g}</option>`).join("");
 
-  qs("qbGradeFilter").innerHTML = "<option value=''>全部年级</option>" + grades.map((g) => `<option value="${g}" ${state.qbGrade === g ? "selected" : ""}>${g}</option>`).join("");
+  if (state.qbGrade && subjects.length) {
+    const subjectSelect = qs("qbSubjectFilter");
+    if (subjectSelect) {
+      subjectSelect.innerHTML = "<option value=''>全部学科</option>" + subjects.map((s) => `<option value="${s}" ${state.qbSubject === s ? "selected" : ""}>${s}</option>`).join("");
+      subjectSelect.style.display = "";
+    }
+  } else {
+    const subjectSelect = qs("qbSubjectFilter");
+    if (subjectSelect) {
+      subjectSelect.innerHTML = "<option value=''>全部学科</option>";
+      subjectSelect.style.display = state.qbGrade ? "" : "none";
+    }
+  }
+
   qs("qbTypeFilter").value = state.qbType;
   qs("qbStatusFilter").value = state.qbStatus;
   qs("qbSearchInput").value = state.qbSearch;
 
-  qs("qbTabs").querySelectorAll("[data-qb-subject]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.qbSubject = btn.dataset.qbSubject;
-      renderQuestionBank(state.qbItems);
-    });
-  });
+  if (!state.qbGrade) {
+    qs("qbStatsBar").innerHTML = `请先选择年级查看题目`;
+    qs("questionBankView").innerHTML = "<div class='qb-empty'>请先选择年级，再按学科筛选题目</div>";
+    return;
+  }
 
-  let filtered = items;
+  let filtered = filteredByGrade;
   if (state.qbSubject) filtered = filtered.filter((i) => i.subject === state.qbSubject);
-  if (state.qbGrade) filtered = filtered.filter((i) => i.grade_level === state.qbGrade);
   if (state.qbType) filtered = filtered.filter((i) => i.question_type === state.qbType);
   if (state.qbStatus) filtered = filtered.filter((i) => i.status === state.qbStatus);
   if (state.qbSearch) {
@@ -648,10 +675,10 @@ function renderQuestionBank(items) {
 
   const approvedCount = filtered.filter((i) => i.status === "approved").length;
   const pendingCount = filtered.filter((i) => i.status === "pending").length;
-  qs("qbStatsBar").innerHTML = `共 <strong>${filtered.length}</strong> 题 · 已审核 <strong>${approvedCount}</strong> · 待审核 <strong>${pendingCount}</strong>`;
+  qs("qbStatsBar").innerHTML = `${state.qbGrade} · 共 <strong>${filtered.length}</strong> 题 · 已审核 <strong>${approvedCount}</strong> · 待审核 <strong>${pendingCount}</strong>`;
 
   if (!filtered.length) {
-    qs("questionBankView").innerHTML = "<div class='qb-empty'>暂无题目，可通过 AI 生成或 Excel 导入添加</div>";
+    qs("questionBankView").innerHTML = "<div class='qb-empty'>当前年级学科下暂无题目，可通过 AI 生成或 Excel 导入添加</div>";
     return;
   }
 
@@ -1031,13 +1058,11 @@ async function loadPracticeReviews() {
 async function loadDocuments() {
   const grade = qs("documentFilterGrade")?.value || "";
   const subject = qs("documentFilterSubject")?.value || "";
-  if (!grade || !subject) {
-    state.documents = [];
-    renderDocumentLibrary();
-    return;
-  }
-  const query = new URLSearchParams({ grade_level: grade, subject });
-  state.documents = await api(`/teacher/documents?${query.toString()}`);
+  const query = new URLSearchParams();
+  if (grade) query.set("grade_level", grade);
+  if (subject) query.set("subject", subject);
+  const suffix = query.toString();
+  state.documents = await api(`/teacher/documents${suffix ? `?${suffix}` : ""}`);
   renderDocumentLibrary();
 }
 
@@ -1398,7 +1423,8 @@ function bindEvents() {
   bindClick("reloadPracticeReviewsButton", () => loadPracticeReviews().catch(handleError));
   bindChange("practiceReviewStatus", () => loadPracticeReviews().catch(handleError));
   bindClick("reloadQuestionBankButton", () => loadQuestionBank().catch(handleError));
-  bindChange("qbGradeFilter", () => { state.qbGrade = qs("qbGradeFilter").value; renderQuestionBank(state.qbItems); });
+  bindChange("qbGradeFilter", () => { state.qbGrade = qs("qbGradeFilter").value; state.qbSubject = ""; renderQuestionBank(state.qbItems); });
+  bindChange("qbSubjectFilter", () => { state.qbSubject = qs("qbSubjectFilter").value; renderQuestionBank(state.qbItems); });
   bindChange("qbTypeFilter", () => { state.qbType = qs("qbTypeFilter").value; renderQuestionBank(state.qbItems); });
   bindChange("qbStatusFilter", () => { state.qbStatus = qs("qbStatusFilter").value; renderQuestionBank(state.qbItems); });
   bindClick("qbSearchButton", () => { state.qbSearch = qs("qbSearchInput").value.trim(); renderQuestionBank(state.qbItems); });
@@ -1407,6 +1433,7 @@ function bindEvents() {
     const searchInput = qs("qbSearchInput");
     if (searchInput) searchInput.value = "";
     if (qs("qbGradeFilter")) qs("qbGradeFilter").value = "";
+    if (qs("qbSubjectFilter")) { qs("qbSubjectFilter").value = ""; qs("qbSubjectFilter").style.display = "none"; }
     if (qs("qbTypeFilter")) qs("qbTypeFilter").value = "";
     if (qs("qbStatusFilter")) qs("qbStatusFilter").value = "";
     renderQuestionBank(state.qbItems);

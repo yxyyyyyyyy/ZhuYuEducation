@@ -26,7 +26,6 @@ class KnowledgeConfigService:
         self._seed_payload = self._load_seed_payload()
 
     def list_textbooks(self, school_id: int) -> list[TextbookView]:
-        self.ensure_seeded(school_id)
         with sql_repository.session() as session:
             rows = session.execute(
                 select(TextbookORM)
@@ -90,7 +89,6 @@ class KnowledgeConfigService:
         return next(item for item in self.list_textbooks(school_id) if item.id == textbook_id)
 
     def get_default_textbook_id(self, school_id: int, grade_level: str | None = None, subject: str | None = None) -> int:
-        self.ensure_seeded(school_id)
         with sql_repository.session() as session:
             stmt = select(TextbookORM).where(TextbookORM.school_id == school_id)
             if grade_level:
@@ -110,7 +108,6 @@ class KnowledgeConfigService:
             return fallback.id
 
     def list_topics_for_school(self, school_id: int, textbook_id: int | None = None) -> list[Topic]:
-        self.ensure_seeded(school_id)
         nodes = []
         with sql_repository.session() as session:
             stmt = select(KnowledgeNodeORM).where(
@@ -120,18 +117,6 @@ class KnowledgeConfigService:
             if textbook_id:
                 stmt = stmt.where(KnowledgeNodeORM.textbook_id == textbook_id)
             nodes = session.execute(stmt.order_by(KnowledgeNodeORM.level.asc(), KnowledgeNodeORM.sort_order.asc(), KnowledgeNodeORM.node_key.asc())).scalars().all()
-
-        if not nodes:
-            textbook_id = textbook_id or self.get_default_textbook_id(school_id)
-            self.seed_textbook_nodes(school_id, textbook_id)
-            with sql_repository.session() as session:
-                stmt = select(KnowledgeNodeORM).where(
-                    KnowledgeNodeORM.school_id == school_id,
-                    KnowledgeNodeORM.is_deleted == 0,
-                )
-                if textbook_id:
-                    stmt = stmt.where(KnowledgeNodeORM.textbook_id == textbook_id)
-                nodes = session.execute(stmt.order_by(KnowledgeNodeORM.level.asc(), KnowledgeNodeORM.sort_order.asc(), KnowledgeNodeORM.node_key.asc())).scalars().all()
 
         if not nodes:
             return []
@@ -182,7 +167,6 @@ class KnowledgeConfigService:
         textbook_id = textbook_id or self.get_default_textbook_id(school_id)
         nodes = self._list_nodes(school_id, textbook_id)
         if not nodes:
-            self.seed_textbook_nodes(school_id, textbook_id)
             nodes = self._list_nodes(school_id, textbook_id)
         question_count_by_topic = self._question_count_by_topic(nodes)
 
@@ -528,7 +512,6 @@ class KnowledgeConfigService:
     def resolve_user_textbook_id(self, user_id: int, school_id: int | None) -> int | None:
         if not school_id:
             return None
-        self.ensure_seeded(school_id)
         with sql_repository.session() as session:
             profile = session.execute(
                 select(StudentProfileORM).where(StudentProfileORM.user_id == user_id).order_by(StudentProfileORM.id.asc())

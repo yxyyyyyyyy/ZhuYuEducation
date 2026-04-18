@@ -32,12 +32,16 @@ from app.repositories.sql_repository import sql_repository
 
 
 class TeacherService:
+    def _teacher_student_filter(self, teacher_user_id: int):
+        return (
+            StudentProfileORM.classroom_id.is_not(None),
+            (StudentProfileORM.teacher_user_id == teacher_user_id) | (StudentProfileORM.user_id == teacher_user_id),
+        )
+
     def student_ids_for_teacher(self, teacher_user_id: int) -> list[int]:
         with sql_repository.session() as session:
             rows = session.execute(
-                select(StudentProfileORM.id).where(
-                    (StudentProfileORM.teacher_user_id == teacher_user_id) | (StudentProfileORM.user_id == teacher_user_id)
-                )
+                select(StudentProfileORM.id).where(*self._teacher_student_filter(teacher_user_id))
             ).scalars().all()
             return list(rows)
 
@@ -45,9 +49,7 @@ class TeacherService:
         with sql_repository.session() as session:
             teacher = session.execute(select(UserORM).where(UserORM.id == teacher_user_id)).scalars().first()
             students = session.execute(
-                select(StudentProfileORM).where(
-                    (StudentProfileORM.teacher_user_id == teacher_user_id) | (StudentProfileORM.user_id == teacher_user_id)
-                )
+                select(StudentProfileORM).where(*self._teacher_student_filter(teacher_user_id))
             ).scalars().all()
             student_ids = [item.id for item in students]
 
@@ -66,6 +68,12 @@ class TeacherService:
                 select(PracticeRecordORM).where(
                     PracticeRecordORM.student_profile_id.in_(student_ids),
                     PracticeRecordORM.evaluation_status != "pending_review",
+                )
+            ).scalars().all() if student_ids else []
+            pending_review_rows = session.execute(
+                select(PracticeRecordORM).where(
+                    PracticeRecordORM.student_profile_id.in_(student_ids),
+                    PracticeRecordORM.evaluation_status == "pending_review",
                 )
             ).scalars().all() if student_ids else []
             mistake_rows = session.execute(
@@ -89,6 +97,10 @@ class TeacherService:
         practice_map = defaultdict(list)
         for row in practice_rows:
             practice_map[row.student_profile_id].append(row)
+
+        pending_review_count = defaultdict(int)
+        for row in pending_review_rows:
+            pending_review_count[row.student_profile_id] += 1
 
         practice_subject_map = defaultdict(lambda: defaultdict(list))
         for row in practice_rows:
@@ -152,7 +164,9 @@ class TeacherService:
                     overall_mastery=round(sum(mastery_values) / len(mastery_values), 2) if mastery_values else 0.0,
                     latest_report_at=latest_report.get(student.id),
                     recent_mistake_count=mistake_count.get(student.id, 0),
+                    recent_practice_count=len(student_practice),
                     recent_practice_accuracy=round(accuracy, 2),
+                    pending_review_count=pending_review_count.get(student.id, 0),
                     subject_summaries=subject_summaries,
                 )
             )
@@ -167,7 +181,11 @@ class TeacherService:
             if summaries
             else 0.0
         )
-        active_students = sum(1 for item in summaries if item.recent_practice_accuracy > 0 or item.recent_mistake_count > 0)
+        active_students = sum(
+            1
+            for item in summaries
+            if item.recent_practice_count > 0 or item.pending_review_count > 0 or item.recent_mistake_count > 0
+        )
         return TeacherDashboard(
             teacher_name=teacher.full_name if teacher else "教师",
             total_students=len(summaries),
